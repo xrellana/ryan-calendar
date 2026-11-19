@@ -65,7 +65,11 @@
       view: 'month',
       anchorYear: now.getFullYear(),
       anchorMonth: now.getMonth() + 1,
-      anchorDate: DU.fromLocalDate(now)
+      anchorDate: DU.fromLocalDate(now),
+      reminderRange: '7d',
+      statsMode: 'month',
+      statsYear: now.getFullYear(),
+      statsMonth: now.getMonth() + 1
     };
 
     var render = function () {
@@ -379,6 +383,18 @@
         if (searchInput) searchInput.value = '';
         store.setFilterQuery('');
         render();
+      } else if (action === 'set-reminder-range') {
+        var nextRange = actionEl.getAttribute('data-range');
+        if (nextRange && nextRange !== state.reminderRange) {
+          state.reminderRange = nextRange;
+          render();
+        }
+      } else if (action === 'set-stats-mode') {
+        var nextMode = actionEl.getAttribute('data-mode');
+        if (nextMode && nextMode !== state.statsMode) {
+          state.statsMode = nextMode;
+          render();
+        }
       } else if (action === 'load-sample') {
         actionEl.disabled = true;
         store
@@ -395,6 +411,25 @@
           });
       }
     });
+
+    // 侧边栏统计年月选择器事件委托
+    var sidebarEl = document.getElementById('sidebar');
+    if (sidebarEl) {
+      sidebarEl.addEventListener('change', function (e) {
+        var sel = e.target && e.target.closest('[data-sidebar-select]');
+        if (!sel) return;
+        var kind = sel.getAttribute('data-sidebar-select');
+        var val = parseInt(sel.value, 10);
+        if (isNaN(val)) return;
+        if (kind === 'stats-year') {
+          state.statsYear = val;
+          render();
+        } else if (kind === 'stats-month' && val >= 1 && val <= 12) {
+          state.statsMonth = val;
+          render();
+        }
+      });
+    }
 
     // 键盘快捷键（Esc 关闭浮层，左右方向键翻页）
     document.addEventListener('keydown', function (e) {

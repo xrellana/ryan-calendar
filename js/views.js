@@ -643,6 +643,17 @@
     return html.join('');
   }
 
+  function addOneCalendarMonth(dateStr) {
+    var DU = WorkCal.DateUtils;
+    var p = DU.parseYMD(dateStr);
+    if (!p) return DU.addDays(dateStr, 30);
+    var nextYear = p.month === 12 ? p.year + 1 : p.year;
+    var nextMonth = p.month === 12 ? 1 : p.month + 1;
+    var lastDay = new Date(nextYear, nextMonth, 0).getDate();
+    var targetDay = Math.min(p.day, lastDay);
+    return DU.formatDate(nextYear, nextMonth, targetDay);
+  }
+
   function renderSidebar(state, store) {
     var container = document.getElementById('sidebar');
     if (!container) return;
@@ -650,17 +661,20 @@
     var DU = WorkCal.DateUtils;
     var Layout = WorkCal.Layout;
     var today = DU.todayStr();
-    var weekEnd = DU.addDays(today, 6);
+    var reminderRange = state.reminderRange === '30d' ? '30d' : '7d';
+    var rangeEnd = reminderRange === '30d' ? addOneCalendarMonth(today) : DU.addDays(today, 6);
+    var rangeLabel = reminderRange === '30d' ? '今起一个月' : '今起 7 天';
+
     var rawAllEvents = store.getEvents();
     var allEvents = store.getFilteredEvents ? store.getFilteredEvents() : rawAllEvents;
     var categories = store.getCategories();
     var priorityMap = store.getCategoryPriorityMap();
 
-    // 1. 近期提醒（今天起 7 天内）
+    // 1. 近期提醒（合并原“近期提醒”与“接下来”，支持切换 今起7天 / 今起一个月）
     var recentEvents = allEvents
       .filter(function (ev) {
         var end = Layout.getEventEndDate(ev);
-        return end >= today && ev.startDate <= weekEnd;
+        return end >= today && ev.startDate <= rangeEnd;
       })
       .sort(function (a, b) {
         if (a.startDate !== b.startDate) return a.startDate.localeCompare(b.startDate);
@@ -670,9 +684,8 @@
     var recentHtml;
     if (recentEvents.length) {
       recentHtml =
-        '<div class="panel-list">' +
+        '<div class="panel-list is-scrollable">' +
         recentEvents
-          .slice(0, 6)
           .map(function (ev) {
             var cat = store.getCategory(ev.categoryId);
             var end = Layout.getEventEndDate(ev);
@@ -700,7 +713,12 @@
             );
           })
           .join('') +
-        '</div>';
+        '</div>' +
+        '<div class="panel-foot-meta"><span>范围：' +
+        escapeHtml(DU.formatShortMD(today) + ' - ' + DU.formatShortMD(rangeEnd)) +
+        '</span><span>共 ' +
+        recentEvents.length +
+        ' 条</span></div>';
     } else if (rawAllEvents.length === 0) {
       recentHtml =
         '<div class="panel-empty">' +
@@ -710,29 +728,55 @@
         '</div>' +
         '</div>';
     } else if (store.hasActiveFilter && store.hasActiveFilter()) {
-      recentHtml = '<div class="panel-empty">当前筛选条件下未来 7 天暂无日程</div>';
+      recentHtml = '<div class="panel-empty">当前筛选条件下' + rangeLabel + '内暂无日程</div>';
     } else {
-      recentHtml = '<div class="panel-empty">未来 7 天暂无待办行程</div>';
+      recentHtml = '<div class="panel-empty">' + rangeLabel + '内暂无待办行程</div>';
     }
 
-    // 2. 当期统计（与当前月/周/年视角严格同步，按最大类别天数归一化进度条，FR-02）
+    // 2. 日程统计（支持自由选择 按月/按年 及具体年份/月份）
+    var statsMode = state.statsMode === 'year' ? 'year' : 'month';
+    var statsYear = state.statsYear || state.anchorYear;
+    var statsMonth = state.statsMonth || state.anchorMonth;
+
+    // 汇总可选年份范围（覆盖当前年份前后 2 年 + 已有日程涉及的所有年份 + 当前选中年份）
+    var nowYear = new Date().getFullYear();
+    var minYear = Math.min(nowYear - 2, statsYear, state.anchorYear);
+    var maxYear = Math.max(nowYear + 2, statsYear, state.anchorYear);
+    for (var yIdx = 0; yIdx < rawAllEvents.length; yIdx++) {
+      var evItem = rawAllEvents[yIdx];
+      var sy = parseInt(String(evItem.startDate || '').slice(0, 4), 10);
+      var ey = parseInt(String(evItem.endDate || evItem.startDate || '').slice(0, 4), 10);
+      if (!isNaN(sy)) {
+        if (sy < minYear) minYear = sy;
+        if (sy > maxYear) maxYear = sy;
+      }
+      if (!isNaN(ey)) {
+        if (ey < minYear) minYear = ey;
+        if (ey > maxYear) maxYear = ey;
+      }
+    }
+
+    var yearOptionsHtml = '';
+    for (var yr = maxYear; yr >= minYear; yr--) {
+      yearOptionsHtml +=
+        '<option value="' + yr + '"' + (yr === statsYear ? ' selected' : '') + '>' + yr + '年</option>';
+    }
+
+    var monthOptionsHtml = '';
+    for (var mo = 1; mo <= 12; mo++) {
+      monthOptionsHtml +=
+        '<option value="' + mo + '"' + (mo === statsMonth ? ' selected' : '') + '>' + mo + '月</option>';
+    }
+
     var periodStart;
     var periodEnd;
-    var periodLabel;
-    if (state.view === 'year') {
-      periodStart = state.anchorYear + '-01-01';
-      periodEnd = state.anchorYear + '-12-31';
-      periodLabel = state.anchorYear + '年统计';
-    } else if (state.view === 'week') {
-      var wDates = DU.getWeekDates(state.anchorDate);
-      periodStart = wDates[0];
-      periodEnd = wDates[6];
-      periodLabel = '本周统计';
+    if (statsMode === 'year') {
+      periodStart = statsYear + '-01-01';
+      periodEnd = statsYear + '-12-31';
     } else {
-      var lastDay = new Date(state.anchorYear, state.anchorMonth, 0).getDate();
-      periodStart = DU.formatDate(state.anchorYear, state.anchorMonth, 1);
-      periodEnd = DU.formatDate(state.anchorYear, state.anchorMonth, lastDay);
-      periodLabel = state.anchorMonth + '月统计';
+      var lastDay = new Date(statsYear, statsMonth, 0).getDate();
+      periodStart = DU.formatDate(statsYear, statsMonth, 1);
+      periodEnd = DU.formatDate(statsYear, statsMonth, lastDay);
     }
 
     var catDaySets = {};
@@ -811,59 +855,59 @@
       })
       .join('');
 
-    // 3. 接下来（7 天之后的后续日程）
-    var upcomingEvents = allEvents
-      .filter(function (ev) {
-        return ev.startDate > weekEnd;
-      })
-      .sort(function (a, b) {
-        if (a.startDate !== b.startDate) return a.startDate.localeCompare(b.startDate);
-        return Layout.compareEvents(a, b, priorityMap);
-      });
-
-    var upcomingHtml = upcomingEvents.length
-      ? '<div class="panel-list">' +
-        upcomingEvents
-          .slice(0, 5)
-          .map(function (ev) {
-            var cat = store.getCategory(ev.categoryId);
-            var end = Layout.getEventEndDate(ev);
-            var rangeStr =
-              end > ev.startDate
-                ? DU.formatShortMD(ev.startDate) + ' - ' + DU.formatShortMD(end)
-                : DU.formatShortMD(ev.startDate);
-            return (
-              '<button type="button" class="panel-item" data-action="open-event" data-event-id="' +
-              escapeHtml(ev.id) +
-              '" style="--cat-color:' +
-              escapeHtml(cat.color) +
-              ';">' +
-              '<div class="panel-item-title">' +
-              escapeHtml(ev.title) +
-              '</div>' +
-              '<div class="panel-item-meta"><span>' +
-              escapeHtml(cat.name) +
-              '</span><span>' +
-              escapeHtml(rangeStr) +
-              '</span></div>' +
-              '</button>'
-            );
-          })
-          .join('') +
-        '</div>'
-      : '<div class="panel-empty">7 天后暂无已排日程</div>';
+    var statsPickerHtml =
+      '<div class="stats-picker-row">' +
+      '<div class="stats-select-group">' +
+      '<select class="stats-select" data-sidebar-select="stats-year" aria-label="选择统计年份">' +
+      yearOptionsHtml +
+      '</select>' +
+      (statsMode === 'month'
+        ? '<select class="stats-select" data-sidebar-select="stats-month" aria-label="选择统计月份">' +
+          monthOptionsHtml +
+          '</select>'
+        : '') +
+      '</div>' +
+      '<span class="panel-sub">共 ' +
+      periodEventCount +
+      ' 条</span>' +
+      '</div>';
 
     container.innerHTML =
       '<section class="panel-card">' +
-      '<div class="panel-header"><h2 class="panel-title">近期提醒</h2><span class="panel-sub">今起 7 天</span></div>' +
+      '<div class="panel-header">' +
+      '<h2 class="panel-title">近期提醒</h2>' +
+      '<div class="mini-seg" role="tablist" aria-label="提醒范围切换">' +
+      '<button type="button" class="mini-seg-btn' +
+      (reminderRange === '7d' ? ' is-active' : '') +
+      '" data-action="set-reminder-range" data-range="7d" aria-selected="' +
+      (reminderRange === '7d' ? 'true' : 'false') +
+      '">今起7天</button>' +
+      '<button type="button" class="mini-seg-btn' +
+      (reminderRange === '30d' ? ' is-active' : '') +
+      '" data-action="set-reminder-range" data-range="30d" aria-selected="' +
+      (reminderRange === '30d' ? 'true' : 'false') +
+      '">今起一个月</button>' +
+      '</div>' +
+      '</div>' +
       recentHtml +
       '</section>' +
       '<section class="panel-card">' +
-      '<div class="panel-header"><h2 class="panel-title">' +
-      escapeHtml(periodLabel) +
-      '</h2><span class="panel-sub">共 ' +
-      periodEventCount +
-      ' 条</span></div>' +
+      '<div class="panel-header">' +
+      '<h2 class="panel-title">日程统计</h2>' +
+      '<div class="mini-seg" role="tablist" aria-label="统计维度切换">' +
+      '<button type="button" class="mini-seg-btn' +
+      (statsMode === 'month' ? ' is-active' : '') +
+      '" data-action="set-stats-mode" data-mode="month" aria-selected="' +
+      (statsMode === 'month' ? 'true' : 'false') +
+      '">按月</button>' +
+      '<button type="button" class="mini-seg-btn' +
+      (statsMode === 'year' ? ' is-active' : '') +
+      '" data-action="set-stats-mode" data-mode="year" aria-selected="' +
+      (statsMode === 'year' ? 'true' : 'false') +
+      '">按年</button>' +
+      '</div>' +
+      '</div>' +
+      statsPickerHtml +
       '<div class="stat-rows">' +
       statsRowsHtml +
       '</div>' +
@@ -872,10 +916,6 @@
       ' 天</span><span>全部日程：' +
       allEvents.length +
       ' 条</span></div>' +
-      '</section>' +
-      '<section class="panel-card">' +
-      '<div class="panel-header"><h2 class="panel-title">接下来</h2><span class="panel-sub">远期排期</span></div>' +
-      upcomingHtml +
       '</section>';
   }
 
