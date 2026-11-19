@@ -96,18 +96,30 @@
     var container = document.getElementById('legend-bar');
     if (!container) return;
     var cats = store.getCategories();
+    var flt = store.getFilter ? store.getFilter() : { query: '', categoryIds: [] };
+    var hasCatFilter = flt.categoryIds && flt.categoryIds.length > 0;
 
     var catHtml = cats
       .map(function (c) {
+        var isSelected = hasCatFilter && flt.categoryIds.indexOf(c.id) !== -1;
+        var cls = 'legend-item legend-filter-chip';
+        if (isSelected) cls += ' is-active';
+        else if (hasCatFilter) cls += ' is-dimmed';
         return (
-          '<span class="legend-item" title="优先级顺序：越靠前同日优先级越高">' +
+          '<button type="button" class="' +
+          cls +
+          '" data-action="toggle-filter-cat" data-cat-id="' +
+          escapeHtml(c.id) +
+          '" aria-pressed="' +
+          (isSelected ? 'true' : 'false') +
+          '" title="点击筛选该类别（支持多选）；顺序越靠前同日优先级越高">' +
           '<span class="legend-swatch" style="background:' +
           escapeHtml(c.color) +
           ';"></span>' +
           '<span>' +
           escapeHtml(c.name) +
           '</span>' +
-          '</span>'
+          '</button>'
         );
       })
       .join('');
@@ -128,6 +140,105 @@
       '</button>';
   }
 
+  function renderFilterAndSearch(store) {
+    var flt = store.getFilter ? store.getFilter() : { query: '', categoryIds: [] };
+    var q = (flt.query || '').trim();
+    var catIds = flt.categoryIds || [];
+    var hasFilter = Boolean(q || catIds.length);
+
+    var clearSearchBtn = document.getElementById('btn-clear-search');
+    if (clearSearchBtn) {
+      clearSearchBtn.classList.toggle('hidden', !q);
+    }
+
+    var statusEl = document.getElementById('filter-status');
+    var statusText = document.getElementById('filter-status-text');
+    var filtered = store.getFilteredEvents ? store.getFilteredEvents() : store.getEvents();
+    var total = store.getEvents().length;
+
+    if (statusEl && statusText) {
+      if (hasFilter) {
+        statusText.textContent = '筛选结果：' + filtered.length + ' / ' + total + ' 条';
+        statusEl.classList.remove('hidden');
+      } else {
+        statusEl.classList.add('hidden');
+      }
+    }
+
+    var panel = document.getElementById('search-results-panel');
+    if (!panel) return;
+    if (!q) {
+      panel.classList.add('hidden');
+      panel.innerHTML = '';
+      return;
+    }
+
+    var DU = WorkCal.DateUtils;
+    var Color = WorkCal.Color;
+    var matched = store.searchEvents ? store.searchEvents(q, catIds) : filtered;
+    var limit = 25;
+    var shown = matched.slice(0, limit);
+
+    var bodyHtml;
+    if (!shown.length) {
+      bodyHtml = '<div class="search-empty">没有找到匹配“' + escapeHtml(q) + '”的日程</div>';
+    } else {
+      bodyHtml =
+        '<div class="search-result-list">' +
+        shown
+          .map(function (ev) {
+            var cat = store.getCategory(ev.categoryId);
+            var st = Color.getEventStyles(cat.color);
+            var dateLabel =
+              ev.endDate && ev.endDate > ev.startDate
+                ? ev.startDate + ' ~ ' + ev.endDate
+                : ev.startDate + '（' + DU.getWeekdayLabel(ev.startDate) + '）';
+            var snippet = ev.notes ? '<span class="search-result-note">' + escapeHtml(ev.notes.slice(0, 60)) + '</span>' : '';
+            return (
+              '<button type="button" class="search-result-item" data-action="jump-to-event" data-event-id="' +
+              escapeHtml(ev.id) +
+              '" data-date="' +
+              escapeHtml(ev.startDate) +
+              '">' +
+              '<span class="search-result-badge" style="background:' +
+              st.chipBg +
+              ';color:' +
+              st.textColor +
+              ';">' +
+              escapeHtml(cat.name) +
+              '</span>' +
+              '<span class="search-result-main">' +
+              '<span class="search-result-title">' +
+              escapeHtml(ev.title) +
+              '</span>' +
+              snippet +
+              '</span>' +
+              '<span class="search-result-date">' +
+              escapeHtml(dateLabel) +
+              '</span>' +
+              '</button>'
+            );
+          })
+          .join('') +
+        '</div>' +
+        (matched.length > limit
+          ? '<div class="search-more-hint">共匹配 ' + matched.length + ' 条，仅展示最近前 ' + limit + ' 条，可输入更具体关键词缩小范围</div>'
+          : '');
+    }
+
+    panel.innerHTML =
+      '<div class="search-results-head">' +
+      '<span>搜索“' +
+      escapeHtml(q) +
+      '”共匹配 <strong>' +
+      matched.length +
+      '</strong> 条日程（点击可定位查看）</span>' +
+      '<button type="button" class="btn btn-subtle btn-sm" data-action="clear-search">收起</button>' +
+      '</div>' +
+      bodyHtml;
+    panel.classList.remove('hidden');
+  }
+
   function renderMonthView(state, store) {
     var DU = WorkCal.DateUtils;
     var Lunar = WorkCal.Lunar;
@@ -138,7 +249,7 @@
     var month = state.anchorMonth;
     var weeks = DU.getMonthGridDates(year, month);
     var today = DU.todayStr();
-    var allEvents = store.getEvents();
+    var allEvents = store.getFilteredEvents ? store.getFilteredEvents() : store.getEvents();
     var priorityMap = store.getCategoryPriorityMap();
     var isMobile = isMobileViewport();
 
@@ -540,7 +651,8 @@
     var Layout = WorkCal.Layout;
     var today = DU.todayStr();
     var weekEnd = DU.addDays(today, 6);
-    var allEvents = store.getEvents();
+    var rawAllEvents = store.getEvents();
+    var allEvents = store.getFilteredEvents ? store.getFilteredEvents() : rawAllEvents;
     var categories = store.getCategories();
     var priorityMap = store.getCategoryPriorityMap();
 
@@ -589,7 +701,7 @@
           })
           .join('') +
         '</div>';
-    } else if (allEvents.length === 0) {
+    } else if (rawAllEvents.length === 0) {
       recentHtml =
         '<div class="panel-empty">' +
         '<div>当前暂无日程记录</div>' +
@@ -597,6 +709,8 @@
         '<button type="button" class="btn btn-outline btn-sm" data-action="load-sample">加载本月示例日程</button>' +
         '</div>' +
         '</div>';
+    } else if (store.hasActiveFilter && store.hasActiveFilter()) {
+      recentHtml = '<div class="panel-empty">当前筛选条件下未来 7 天暂无日程</div>';
     } else {
       recentHtml = '<div class="panel-empty">未来 7 天暂无待办行程</div>';
     }
@@ -768,6 +882,7 @@
   function renderAll(state, store) {
     renderHeader(state);
     renderLegend(store);
+    renderFilterAndSearch(store);
 
     var stage = document.getElementById('calendar-stage');
     if (stage) {

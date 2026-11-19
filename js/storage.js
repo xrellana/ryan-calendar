@@ -1,5 +1,5 @@
 /**
- * 数据持久化、类别与日程 CRUD、JSON 备份恢复、ICS 导出与同步链接编解码（FR-07 / FR-08 / FR-11 / AC-16）
+ * 云端数据存储适配层：内存缓存 + 异步 API 同步 + 搜索与类别筛选 + 备份恢复与旧本地数据迁移
  */
 (function (root) {
   'use strict';
@@ -18,26 +18,6 @@
     return JSON.parse(JSON.stringify(obj));
   }
 
-  function generateId(prefix) {
-    return (
-      (prefix || 'id') +
-      '-' +
-      Date.now().toString(36) +
-      '-' +
-      Math.random().toString(36).slice(2, 7)
-    );
-  }
-
-  function createDefaultState() {
-    var cfg = getConfig();
-    return {
-      version: 1,
-      categories: clone(cfg.defaultCategories),
-      events: [],
-      updatedAt: new Date().toISOString()
-    };
-  }
-
   function normalizeCategory(cat) {
     var Color = WorkCal.Color;
     var name = String((cat && cat.name) || '').trim().slice(0, 20) || '未命名类别';
@@ -45,7 +25,7 @@
       ? Color.normalizeHex(cat && cat.color)
       : String((cat && cat.color) || '#2B6CD4').toUpperCase();
     return {
-      id: (cat && cat.id) ? String(cat.id) : generateId('cat'),
+      id: cat && cat.id ? String(cat.id) : 'cat-' + Date.now().toString(36),
       name: name,
       color: color
     };
@@ -65,7 +45,7 @@
     var source = ev && ev.source === 'ledger' ? 'ledger' : 'manual';
 
     var out = {
-      id: (ev && ev.id) ? String(ev.id) : generateId('evt'),
+      id: ev && ev.id ? String(ev.id) : 'evt-' + Date.now().toString(36),
       title: title,
       categoryId: String((ev && ev.categoryId) || ''),
       startDate: startDate,
@@ -92,60 +72,75 @@
     return out;
   }
 
-  function createStore(storageBackend) {
-    var backend =
-      storageBackend ||
-      (typeof localStorage !== 'undefined' ? localStorage : createMemoryBackend());
+  function createStore(apiClient) {
+    var api = apiClient || WorkCal.Api;
+    var state = {
+      version: 1,
+      categories: clone(getConfig().defaultCategories),
+      events: [],
+      updatedAt: ''
+    };
 
-    var state = load();
+    var filter = {
+      query: '',
+      categoryIds: []
+    };
 
-    function createMemoryBackend() {
-      var mem = {};
-      return {
-        getItem: function (k) {
-          return Object.prototype.hasOwnProperty.call(mem, k) ? mem[k] : null;
-        },
-        setItem: function (k, v) {
-          mem[k] = String(v);
-        },
-        removeItem: function (k) {
-          delete mem[k];
-        }
-      };
-    }
-
-    function load() {
-      var key = getConfig().storageKey;
-      try {
-        var raw = backend.getItem(key);
-        if (!raw) return createDefaultState();
-        var parsed = JSON.parse(raw);
-        if (!parsed || !Array.isArray(parsed.categories) || !Array.isArray(parsed.events)) {
-          return createDefaultState();
-        }
-        return {
-          version: 1,
-          categories: parsed.categories.map(normalizeCategory),
-          events: parsed.events
-            .map(normalizeEvent)
-            .filter(function (e) {
+    function applyServerState(payload) {
+      if (!payload) return state;
+      state = {
+        version: 1,
+        categories: Array.isArray(payload.categories)
+          ? payload.categories.map(normalizeCategory)
+          : [],
+        events: Array.isArray(payload.events)
+          ? payload.events.map(normalizeEvent).filter(function (e) {
               return Boolean(e.title && e.startDate);
-            }),
-          updatedAt: parsed.updatedAt || new Date().toISOString()
-        };
-      } catch (err) {
-        return createDefaultState();
+            })
+          : [],
+        updatedAt: payload.updatedAt || new Date().toISOString()
+      };
+      // 清理筛选中已不存在的类别 ID
+      if (filter.categoryIds.length) {
+        var validSet = {};
+        state.categories.forEach(function (c) {
+          validSet[c.id] = true;
+        });
+        filter.categoryIds = filter.categoryIds.filter(function (id) {
+          return Boolean(validSet[id]);
+        });
       }
+      return state;
     }
 
-    function save() {
-      state.updatedAt = new Date().toISOString();
-      try {
-        backend.setItem(getConfig().storageKey, JSON.stringify(state));
-        return true;
-      } catch (err) {
-        return false;
-      }
+    function resetMemoryState() {
+      state = {
+        version: 1,
+        categories: clone(getConfig().defaultCategories),
+        events: [],
+        updatedAt: ''
+      };
+      filter = { query: '', categoryIds: [] };
+    }
+
+    function loadFromServer() {
+      return api.getState().then(function (data) {
+        return applyServerState(data);
+      });
+    }
+
+    function refreshIfChanged() {
+      var prevUpdated = state.updatedAt;
+      var prevCount = state.events.length;
+      var prevCatCount = state.categories.length;
+      return api.getState().then(function (data) {
+        var changed =
+          data.updatedAt !== prevUpdated ||
+          (data.events && data.events.length !== prevCount) ||
+          (data.categories && data.categories.length !== prevCatCount);
+        applyServerState(data);
+        return changed;
+      });
     }
 
     function getState() {
@@ -171,70 +166,96 @@
       return map;
     }
 
-    function addCategory(name, color) {
-      var cleanName = String(name || '').trim().slice(0, 20);
-      if (!cleanName) throw new Error('类别名称不能为空');
-      var cat = normalizeCategory({
-        id: generateId('cat'),
-        name: cleanName,
-        color: color || '#2B6CD4'
-      });
-      state.categories.push(cat);
-      save();
-      return cat;
+    function countEventsByCategory(categoryId) {
+      var count = 0;
+      for (var i = 0; i < state.events.length; i++) {
+        if (state.events[i].categoryId === categoryId) count++;
+      }
+      return count;
     }
 
-    function updateCategory(id, patch) {
-      for (var i = 0; i < state.categories.length; i++) {
-        if (state.categories[i].id === id) {
-          if (patch.name !== undefined) {
-            var n = String(patch.name).trim().slice(0, 20);
-            if (n) state.categories[i].name = n;
-          }
-          if (patch.color !== undefined) {
-            state.categories[i].color = WorkCal.Color
-              ? WorkCal.Color.normalizeHex(patch.color)
-              : patch.color;
-          }
-          save();
-          return state.categories[i];
+    // -----------------------------------------------------------------------
+    // 筛选与搜索
+    // -----------------------------------------------------------------------
+    function getFilter() {
+      return {
+        query: filter.query,
+        categoryIds: filter.categoryIds.slice()
+      };
+    }
+
+    function hasActiveFilter() {
+      return Boolean(filter.query.trim() || filter.categoryIds.length > 0);
+    }
+
+    function setFilterQuery(q) {
+      filter.query = String(q || '');
+    }
+
+    function toggleFilterCategory(catId) {
+      var idx = filter.categoryIds.indexOf(catId);
+      if (idx === -1) filter.categoryIds.push(catId);
+      else filter.categoryIds.splice(idx, 1);
+    }
+
+    function clearFilters() {
+      filter.query = '';
+      filter.categoryIds = [];
+    }
+
+    function eventMatchesFilter(ev, customQuery, customCatIds) {
+      var q = (customQuery !== undefined ? customQuery : filter.query).trim().toLowerCase();
+      var catIds = customCatIds !== undefined ? customCatIds : filter.categoryIds;
+
+      if (catIds && catIds.length > 0) {
+        if (catIds.indexOf(ev.categoryId) === -1) return false;
+      }
+
+      if (q) {
+        var cat = getCategory(ev.categoryId);
+        var haystack = [
+          ev.title,
+          ev.notes,
+          ev.startDate,
+          ev.endDate,
+          cat ? cat.name : '',
+          ev.ledgerMeta ? ev.ledgerMeta.projectName : '',
+          ev.ledgerMeta ? ev.ledgerMeta.stage : '',
+          ev.ledgerMeta ? ev.ledgerMeta.level : '',
+          ev.ledgerMeta ? ev.ledgerMeta.role : ''
+        ]
+          .join(' ')
+          .toLowerCase();
+        var terms = q.split(/\s+/).filter(Boolean);
+        for (var i = 0; i < terms.length; i++) {
+          if (haystack.indexOf(terms[i]) === -1) return false;
         }
       }
-      return null;
-    }
-
-    function deleteCategory(id) {
-      var before = state.categories.length;
-      state.categories = state.categories.filter(function (c) {
-        return c.id !== id;
-      });
-      if (state.categories.length !== before) {
-        save();
-        return true;
-      }
-      return false;
-    }
-
-    function moveCategory(id, direction) {
-      var idx = -1;
-      for (var i = 0; i < state.categories.length; i++) {
-        if (state.categories[i].id === id) {
-          idx = i;
-          break;
-        }
-      }
-      if (idx === -1) return false;
-      var target = direction === 'up' ? idx - 1 : idx + 1;
-      if (target < 0 || target >= state.categories.length) return false;
-      var tmp = state.categories[idx];
-      state.categories[idx] = state.categories[target];
-      state.categories[target] = tmp;
-      save();
       return true;
     }
 
     function getEvents() {
       return state.events;
+    }
+
+    function getFilteredEvents() {
+      if (!hasActiveFilter()) return state.events;
+      return state.events.filter(function (ev) {
+        return eventMatchesFilter(ev);
+      });
+    }
+
+    function searchEvents(query, categoryIds) {
+      var priorityMap = getCategoryPriorityMap();
+      var matched = state.events.filter(function (ev) {
+        return eventMatchesFilter(ev, query, categoryIds);
+      });
+      matched.sort(function (a, b) {
+        if (a.startDate !== b.startDate) return b.startDate.localeCompare(a.startDate);
+        if (WorkCal.Layout) return WorkCal.Layout.compareEvents(a, b, priorityMap);
+        return 0;
+      });
+      return matched;
     }
 
     function getEventById(id) {
@@ -244,60 +265,11 @@
       return null;
     }
 
-    function addEvent(data) {
-      var ev = normalizeEvent(data);
-      if (!ev.title) throw new Error('日程标题不能为空');
-      if (!ev.startDate) throw new Error('开始日期不能为空');
-      state.events.push(ev);
-      save();
-      return ev;
-    }
-
-    function updateEvent(id, patch) {
-      for (var i = 0; i < state.events.length; i++) {
-        if (state.events[i].id === id) {
-          var merged = Object.assign({}, state.events[i], patch, {
-            id: id,
-            createdAt: state.events[i].createdAt,
-            updatedAt: new Date().toISOString()
-          });
-          var normalized = normalizeEvent(merged);
-          if (!normalized.title) throw new Error('日程标题不能为空');
-          state.events[i] = normalized;
-          save();
-          return normalized;
-        }
-      }
-      return null;
-    }
-
-    function deleteEvent(id) {
-      var before = state.events.length;
-      state.events = state.events.filter(function (e) {
-        return e.id !== id;
-      });
-      if (state.events.length !== before) {
-        save();
-        return true;
-      }
-      return false;
-    }
-
-    function clearAllEvents() {
-      var count = state.events.length;
-      state.events = [];
-      save();
-      return count;
-    }
-
-    function resetAll() {
-      state = createDefaultState();
-      save();
-    }
-
-    function getEventsOnDate(dateStr) {
+    function getEventsOnDate(dateStr, opts) {
+      var ignoreFilter = Boolean(opts && opts.ignoreFilter);
+      var sourceList = ignoreFilter ? state.events : getFilteredEvents();
       var priorityMap = getCategoryPriorityMap();
-      var list = state.events.filter(function (ev) {
+      var list = sourceList.filter(function (ev) {
         var end = ev.endDate && ev.endDate >= ev.startDate ? ev.endDate : ev.startDate;
         return ev.startDate <= dateStr && end >= dateStr;
       });
@@ -310,80 +282,152 @@
       return list;
     }
 
-    /**
-     * BR-1：获取某日最高优先级的类别（用于日期顶部色条与年视图底色）
-     */
     function getTopCategoryOnDate(dateStr) {
       var list = getEventsOnDate(dateStr);
       if (!list.length) return null;
       return getCategory(list[0].categoryId);
     }
 
-    /**
-     * 导入台账结果（FR-10 / BR-2：只新增/更新 source==='ledger'，绝不覆盖手填）
-     */
-    function applyLedgerEntries(entries) {
-      var keyIndex = {};
-      for (var i = 0; i < state.events.length; i++) {
-        var existing = state.events[i];
-        if (existing.source === 'ledger' && existing.ledgerKey) {
-          keyIndex[existing.ledgerKey] = i;
+    // -----------------------------------------------------------------------
+    // 类别异步 CRUD
+    // -----------------------------------------------------------------------
+    function addCategory(name, color) {
+      var cleanName = String(name || '').trim().slice(0, 20);
+      if (!cleanName) return Promise.reject(new Error('类别名称不能为空'));
+      return api.addCategory(cleanName, color || '#2B6CD4').then(function (res) {
+        if (res && Array.isArray(res.categories)) {
+          state.categories = res.categories.map(normalizeCategory);
+        } else if (res && res.category) {
+          state.categories.push(normalizeCategory(res.category));
         }
-      }
-
-      var added = 0;
-      var updated = 0;
-      var now = new Date().toISOString();
-
-      for (var j = 0; j < entries.length; j++) {
-        var item = entries[j];
-        var endDate = item.endDate && item.endDate > item.startDate ? item.endDate : '';
-        var idx = Object.prototype.hasOwnProperty.call(keyIndex, item.ledgerKey)
-          ? keyIndex[item.ledgerKey]
-          : -1;
-
-        if (idx >= 0) {
-          var prev = state.events[idx];
-          state.events[idx] = normalizeEvent({
-            id: prev.id,
-            title: item.title,
-            categoryId: item.categoryId,
-            startDate: item.startDate,
-            endDate: endDate,
-            allDay: true,
-            notes: item.notes,
-            source: 'ledger',
-            ledgerKey: item.ledgerKey,
-            ledgerMeta: item.ledgerMeta,
-            createdAt: prev.createdAt,
-            updatedAt: now
-          });
-          updated++;
-        } else {
-          var created = normalizeEvent({
-            id: generateId('evt'),
-            title: item.title,
-            categoryId: item.categoryId,
-            startDate: item.startDate,
-            endDate: endDate,
-            allDay: true,
-            notes: item.notes,
-            source: 'ledger',
-            ledgerKey: item.ledgerKey,
-            ledgerMeta: item.ledgerMeta,
-            createdAt: now,
-            updatedAt: now
-          });
-          keyIndex[item.ledgerKey] = state.events.length;
-          state.events.push(created);
-          added++;
-        }
-      }
-
-      save();
-      return { added: added, updated: updated };
+        state.updatedAt = new Date().toISOString();
+        return res.category ? normalizeCategory(res.category) : state.categories[state.categories.length - 1];
+      });
     }
 
+    function updateCategory(id, patch) {
+      return api.updateCategory(id, patch).then(function (res) {
+        if (res && Array.isArray(res.categories)) {
+          state.categories = res.categories.map(normalizeCategory);
+        }
+        state.updatedAt = new Date().toISOString();
+        return res && res.category ? normalizeCategory(res.category) : getCategory(id);
+      });
+    }
+
+    function deleteCategory(id) {
+      return api.deleteCategory(id).then(function (res) {
+        if (res && Array.isArray(res.categories)) {
+          state.categories = res.categories.map(normalizeCategory);
+        } else {
+          state.categories = state.categories.filter(function (c) {
+            return c.id !== id;
+          });
+        }
+        filter.categoryIds = filter.categoryIds.filter(function (cid) {
+          return cid !== id;
+        });
+        state.updatedAt = new Date().toISOString();
+        return true;
+      });
+    }
+
+    function moveCategory(id, direction) {
+      var idx = -1;
+      for (var i = 0; i < state.categories.length; i++) {
+        if (state.categories[i].id === id) {
+          idx = i;
+          break;
+        }
+      }
+      if (idx === -1) return Promise.resolve(false);
+      var target = direction === 'up' ? idx - 1 : idx + 1;
+      if (target < 0 || target >= state.categories.length) return Promise.resolve(false);
+
+      var ordered = state.categories.map(function (c) {
+        return c.id;
+      });
+      var tmp = ordered[idx];
+      ordered[idx] = ordered[target];
+      ordered[target] = tmp;
+
+      return api.reorderCategories(ordered).then(function (res) {
+        if (res && Array.isArray(res.categories)) {
+          state.categories = res.categories.map(normalizeCategory);
+        }
+        state.updatedAt = new Date().toISOString();
+        return true;
+      });
+    }
+
+    // -----------------------------------------------------------------------
+    // 日程异步 CRUD
+    // -----------------------------------------------------------------------
+    function addEvent(data) {
+      return api.addEvent(data).then(function (res) {
+        var created = normalizeEvent(res.event);
+        state.events.push(created);
+        state.updatedAt = created.updatedAt || new Date().toISOString();
+        return created;
+      });
+    }
+
+    function updateEvent(id, patch) {
+      return api.updateEvent(id, patch).then(function (res) {
+        var updated = normalizeEvent(res.event);
+        var replaced = false;
+        for (var i = 0; i < state.events.length; i++) {
+          if (state.events[i].id === id) {
+            state.events[i] = updated;
+            replaced = true;
+            break;
+          }
+        }
+        if (!replaced) state.events.push(updated);
+        state.updatedAt = updated.updatedAt || new Date().toISOString();
+        return updated;
+      });
+    }
+
+    function deleteEvent(id) {
+      return api.deleteEvent(id).then(function () {
+        state.events = state.events.filter(function (e) {
+          return e.id !== id;
+        });
+        state.updatedAt = new Date().toISOString();
+        return true;
+      });
+    }
+
+    function clearAllEvents() {
+      return api.clearAllEvents().then(function (res) {
+        var deleted = (res && res.deleted) || state.events.length;
+        state.events = [];
+        state.updatedAt = new Date().toISOString();
+        return deleted;
+      });
+    }
+
+    function applyLedgerEntries(entries) {
+      return api.importLedger(entries).then(function (res) {
+        if (res && res.state) applyServerState(res.state);
+        return {
+          added: (res && res.added) || 0,
+          updated: (res && res.updated) || 0
+        };
+      });
+    }
+
+    function loadSampleData(year, month) {
+      return api.loadSampleData(year, month).then(function (res) {
+        if (res && res.state) applyServerState(res.state);
+        return (res && res.count) || 0;
+      });
+    }
+
+    // -----------------------------------------------------------------------
+    // JSON 备份导出/解析/云端恢复 & 旧版 localStorage 检测
+    // -----------------------------------------------------------------------
     function exportBackupJSON() {
       return JSON.stringify(
         {
@@ -418,47 +462,40 @@
     }
 
     function restoreBackup(data, mode) {
-      if (mode === 'merge') {
-        var catMap = {};
-        state.categories.forEach(function (c) {
-          catMap[c.id] = true;
-        });
-        data.categories.forEach(function (c) {
-          if (!catMap[c.id]) {
-            state.categories.push(normalizeCategory(c));
-            catMap[c.id] = true;
-          }
-        });
-        var evtMap = {};
-        state.events.forEach(function (e) {
-          evtMap[e.id] = true;
-        });
-        var mergedCount = 0;
-        data.events.forEach(function (e) {
-          if (!evtMap[e.id]) {
-            state.events.push(normalizeEvent(e));
-            evtMap[e.id] = true;
-            mergedCount++;
-          }
-        });
-        save();
-        return { categories: state.categories.length, events: mergedCount };
-      }
-
-      // 默认完全还原（AC-16）
-      state = {
-        version: 1,
-        categories: data.categories.map(normalizeCategory),
-        events: data.events.map(normalizeEvent),
-        updatedAt: new Date().toISOString()
-      };
-      save();
-      return {
-        categories: state.categories.length,
-        events: state.events.length
-      };
+      return api.restoreBackup(data, mode || 'replace').then(function (res) {
+        if (res && res.state) applyServerState(res.state);
+        return {
+          categories: (res && res.categories) || state.categories.length,
+          events: (res && res.events) || state.events.length
+        };
+      });
     }
 
+    function detectLegacyLocalData() {
+      if (typeof localStorage === 'undefined') return null;
+      try {
+        var raw = localStorage.getItem(getConfig().legacyStorageKey || 'work_calendar_v1');
+        if (!raw) return null;
+        var parsed = parseBackupJSON(raw);
+        if (!parsed.events.length) return null;
+        return parsed;
+      } catch (err) {
+        return null;
+      }
+    }
+
+    function clearLegacyLocalData() {
+      if (typeof localStorage === 'undefined') return;
+      try {
+        localStorage.removeItem(getConfig().legacyStorageKey || 'work_calendar_v1');
+      } catch (err) {
+        // ignore
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // ICS 导出（本地即时下载）
+    // -----------------------------------------------------------------------
     function escapeICSText(str) {
       return String(str || '')
         .replace(/\\/g, '\\\\')
@@ -472,10 +509,11 @@
       var lines = [
         'BEGIN:VCALENDAR',
         'VERSION:2.0',
-        'PRODID:-//WorkCalendar//Personal Schedule//CN',
+        'PRODID:-//WorkCalendar//Cloud Schedule//CN',
         'CALSCALE:GREGORIAN',
         'METHOD:PUBLISH',
-        'X-WR-CALNAME:工作日程'
+        'X-WR-CALNAME:工作日程',
+        'X-WR-TIMEZONE:Asia/Shanghai'
       ];
 
       var stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
@@ -500,19 +538,18 @@
         }
 
         lines.push('BEGIN:VEVENT');
-        lines.push('UID:' + escapeICSText(ev.id) + '@work-calendar.local');
+        lines.push('UID:' + escapeICSText(ev.id) + '@work-calendar');
         lines.push('DTSTAMP:' + stamp);
 
         if (ev.allDay !== false) {
-          // RFC 5545：全天事件 DTEND 为排他次日
           var exclusiveEnd = DU.addDays(endDate, 1);
           lines.push('DTSTART;VALUE=DATE:' + ev.startDate.replace(/-/g, ''));
           lines.push('DTEND;VALUE=DATE:' + exclusiveEnd.replace(/-/g, ''));
         } else {
           var sTime = (ev.startTime || '09:00').replace(':', '') + '00';
           var eTime = (ev.endTime || '18:00').replace(':', '') + '00';
-          lines.push('DTSTART:' + ev.startDate.replace(/-/g, '') + 'T' + sTime);
-          lines.push('DTEND:' + endDate.replace(/-/g, '') + 'T' + eTime);
+          lines.push('DTSTART;TZID=Asia/Shanghai:' + ev.startDate.replace(/-/g, '') + 'T' + sTime);
+          lines.push('DTEND;TZID=Asia/Shanghai:' + endDate.replace(/-/g, '') + 'T' + eTime);
         }
 
         lines.push('SUMMARY:' + escapeICSText(summary));
@@ -527,248 +564,41 @@
       return lines.join('\r\n');
     }
 
-    function bytesToBase64Url(bytes) {
-      var bin = '';
-      var chunk = 0x8000;
-      for (var i = 0; i < bytes.length; i += chunk) {
-        bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
-      }
-      var b64 =
-        typeof btoa === 'function'
-          ? btoa(bin)
-          : Buffer.from(bytes).toString('base64');
-      return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-    }
-
-    function base64UrlToBytes(b64url) {
-      var b64 = b64url.replace(/-/g, '+').replace(/_/g, '/');
-      while (b64.length % 4) b64 += '=';
-      if (typeof atob === 'function') {
-        var bin = atob(b64);
-        var out = new Uint8Array(bin.length);
-        for (var i = 0; i < bin.length; i++) {
-          out[i] = bin.charCodeAt(i);
-        }
-        return out;
-      }
-      return new Uint8Array(Buffer.from(b64, 'base64'));
-    }
-
-    function packCompactState() {
-      return {
-        v: 1,
-        c: state.categories.map(function (c) {
-          return [c.id, c.name, c.color];
-        }),
-        e: state.events.map(function (ev) {
-          return [
-            ev.id,
-            ev.title,
-            ev.categoryId,
-            ev.startDate,
-            ev.endDate || '',
-            ev.allDay !== false ? 1 : 0,
-            ev.startTime || '',
-            ev.endTime || '',
-            ev.notes || '',
-            ev.source === 'ledger' ? 1 : 0,
-            ev.ledgerKey || '',
-            ev.ledgerMeta || null
-          ];
-        })
-      };
-    }
-
-    function unpackCompactState(packed) {
-      if (!packed || !Array.isArray(packed.c) || !Array.isArray(packed.e)) {
-        throw new Error('同步数据格式无效');
-      }
-      return {
-        categories: packed.c.map(function (row) {
-          return normalizeCategory({ id: row[0], name: row[1], color: row[2] });
-        }),
-        events: packed.e.map(function (row) {
-          return normalizeEvent({
-            id: row[0],
-            title: row[1],
-            categoryId: row[2],
-            startDate: row[3],
-            endDate: row[4],
-            allDay: row[5] !== 0,
-            startTime: row[6],
-            endTime: row[7],
-            notes: row[8],
-            source: row[9] === 1 ? 'ledger' : 'manual',
-            ledgerKey: row[10],
-            ledgerMeta: row[11]
-          });
-        })
-      };
-    }
-
-    function encodeSyncTokenAsync() {
-      var jsonStr = JSON.stringify(packCompactState());
-      var encoder = new TextEncoder();
-      var rawBytes = encoder.encode(jsonStr);
-
-      if (typeof CompressionStream !== 'undefined') {
-        try {
-          var cs = new CompressionStream('deflate-raw');
-          var writer = cs.writable.getWriter();
-          writer.write(rawBytes);
-          writer.close();
-          return new Response(cs.readable)
-            .arrayBuffer()
-            .then(function (buf) {
-              return 'z.' + bytesToBase64Url(new Uint8Array(buf));
-            })
-            .catch(function () {
-              return 'p.' + bytesToBase64Url(rawBytes);
-            });
-        } catch (err) {
-          return Promise.resolve('p.' + bytesToBase64Url(rawBytes));
-        }
-      }
-      return Promise.resolve('p.' + bytesToBase64Url(rawBytes));
-    }
-
-    function decodeSyncTokenAsync(token) {
-      if (!token || typeof token !== 'string') {
-        return Promise.reject(new Error('同步参数为空'));
-      }
-      var clean = token.trim();
-      if (clean.indexOf('z.') === 0) {
-        var compressed = base64UrlToBytes(clean.slice(2));
-        if (typeof DecompressionStream !== 'undefined') {
-          var ds = new DecompressionStream('deflate-raw');
-          var writer = ds.writable.getWriter();
-          writer.write(compressed);
-          writer.close();
-          return new Response(ds.readable)
-            .arrayBuffer()
-            .then(function (buf) {
-              var text = new TextDecoder('utf-8').decode(new Uint8Array(buf));
-              return unpackCompactState(JSON.parse(text));
-            });
-        }
-        if (WorkCal.Importer && WorkCal.Importer.inflateRaw) {
-          var inflated = WorkCal.Importer.inflateRaw(compressed);
-          var text2 = new TextDecoder('utf-8').decode(inflated);
-          return Promise.resolve(unpackCompactState(JSON.parse(text2)));
-        }
-        return Promise.reject(new Error('当前浏览器不支持解压该同步链接'));
-      }
-      if (clean.indexOf('p.') === 0) {
-        var bytes = base64UrlToBytes(clean.slice(2));
-        var str = new TextDecoder('utf-8').decode(bytes);
-        return Promise.resolve(unpackCompactState(JSON.parse(str)));
-      }
-      return Promise.reject(new Error('无法识别的同步链接格式'));
-    }
-
-    function buildSyncUrl(token, currentHref) {
-      var base = currentHref || (typeof window !== 'undefined' ? window.location.href : 'https://example.com/');
-      var url = new URL(base);
-      // 保留所有现有查询参数（如访问参数 ?k=ryan2026），将同步数据放进 hash
-      url.hash = 'sync=' + token;
-      return url.toString();
-    }
-
-    /**
-     * 在当前月一键加载贴近真实业务的示例日程（便于初版直观体验）
-     */
-    function loadSampleData(year, month) {
-      var DU = getDateUtils();
-      var pad = DU.pad2;
-      var ym = year + '-' + pad(month);
-
-      var samples = [
-        {
-          title: '华东新能源装备厂现场评估',
-          categoryId: 'cat-assessment',
-          startDate: ym + '-03',
-          endDate: ym + '-05',
-          allDay: true,
-          notes: '联系人：李工 13800001111；需携带评估表与安全检查清单'
-        },
-        {
-          title: '智能制造专项咨询出差（跨周）',
-          categoryId: 'cat-consulting',
-          startDate: ym + '-11',
-          endDate: ym + '-16',
-          allDay: true,
-          notes: '高铁往返，周一上午与甲方项目组对齐评估范围'
-        },
-        {
-          title: '某化工园区预评估（并行档期）',
-          categoryId: 'cat-assessment',
-          startDate: ym + '-13',
-          endDate: ym + '-15',
-          allDay: true,
-          notes: '协助复核工艺安全资料'
-        },
-        {
-          title: '华东项目初稿报告提交截止',
-          categoryId: 'cat-deadline',
-          startDate: ym + '-19',
-          endDate: '',
-          allDay: false,
-          startTime: '17:00',
-          endTime: '18:00',
-          notes: '17:00 前发甲方邮箱并抄送内审组'
-        },
-        {
-          title: '内部评估专家复核会',
-          categoryId: 'cat-consulting',
-          startDate: ym + '-19',
-          endDate: '',
-          allDay: false,
-          startTime: '09:30',
-          endTime: '11:30',
-          notes: '三楼小会议室'
-        },
-        {
-          title: '整理现场照片与归档台账',
-          categoryId: 'cat-rest',
-          startDate: ym + '-19',
-          endDate: '',
-          allDay: true,
-          notes: '下午调休半天'
-        }
-      ];
-
-      samples.forEach(function (item) {
-        addEvent(item);
-      });
-      return samples.length;
-    }
-
     return {
+      loadFromServer: loadFromServer,
+      refreshIfChanged: refreshIfChanged,
+      resetMemoryState: resetMemoryState,
       getState: getState,
       getCategories: getCategories,
       getCategory: getCategory,
       getCategoryPriorityMap: getCategoryPriorityMap,
+      countEventsByCategory: countEventsByCategory,
       addCategory: addCategory,
       updateCategory: updateCategory,
       deleteCategory: deleteCategory,
       moveCategory: moveCategory,
       getEvents: getEvents,
+      getFilteredEvents: getFilteredEvents,
+      searchEvents: searchEvents,
       getEventById: getEventById,
       addEvent: addEvent,
       updateEvent: updateEvent,
       deleteEvent: deleteEvent,
       clearAllEvents: clearAllEvents,
-      resetAll: resetAll,
       getEventsOnDate: getEventsOnDate,
       getTopCategoryOnDate: getTopCategoryOnDate,
+      getFilter: getFilter,
+      hasActiveFilter: hasActiveFilter,
+      setFilterQuery: setFilterQuery,
+      toggleFilterCategory: toggleFilterCategory,
+      clearFilters: clearFilters,
       applyLedgerEntries: applyLedgerEntries,
       exportBackupJSON: exportBackupJSON,
       parseBackupJSON: parseBackupJSON,
       restoreBackup: restoreBackup,
+      detectLegacyLocalData: detectLegacyLocalData,
+      clearLegacyLocalData: clearLegacyLocalData,
       exportICS: exportICS,
-      encodeSyncTokenAsync: encodeSyncTokenAsync,
-      decodeSyncTokenAsync: decodeSyncTokenAsync,
-      buildSyncUrl: buildSyncUrl,
       loadSampleData: loadSampleData
     };
   }

@@ -130,17 +130,44 @@
 
   var ALL_HOLIDAYS = {};
   var ALL_WORKDAYS = {};
-  Object.keys(YEAR_PLANS).forEach(function (yr) {
-    var plan = YEAR_PLANS[yr];
-    Object.assign(ALL_HOLIDAYS, plan.holidays);
-    Object.assign(ALL_WORKDAYS, plan.workdays);
-  });
+  var COVERED_YEARS = {};
+
+  function rebuildIndexes() {
+    ALL_HOLIDAYS = {};
+    ALL_WORKDAYS = {};
+    COVERED_YEARS = {};
+    var years = Object.keys(YEAR_PLANS)
+      .map(function (y) {
+        return parseInt(y, 10);
+      })
+      .filter(function (y) {
+        return !isNaN(y);
+      })
+      .sort(function (a, b) {
+        return a - b;
+      });
+
+    years.forEach(function (yr) {
+      var plan = YEAR_PLANS[yr];
+      COVERED_YEARS[yr] = true;
+      if (plan && plan.holidays) Object.assign(ALL_HOLIDAYS, plan.holidays);
+      if (plan && plan.workdays) Object.assign(ALL_WORKDAYS, plan.workdays);
+    });
+
+    if (years.length) {
+      Holidays.coveredRange = {
+        minYear: years[0],
+        maxYear: years[years.length - 1]
+      };
+    }
+  }
 
   var Holidays = {
+    YEAR_PLANS: YEAR_PLANS,
     coveredRange: { minYear: 2024, maxYear: 2027 },
 
     isYearCovered: function (year) {
-      return Boolean(YEAR_PLANS[year]);
+      return Boolean(COVERED_YEARS[year]);
     },
 
     getHoliday: function (dateStr) {
@@ -153,8 +180,45 @@
 
     isMakeupWorkday: function (dateStr) {
       return Boolean(ALL_WORKDAYS[dateStr]);
+    },
+
+    /**
+     * 使用服务端数据库下发的节假日数据刷新前端索引（保留内置数据兜底）
+     * payload: { years: number[], entries: Array<{ date, year, type, name }> }
+     */
+    loadFromServer: function (payload) {
+      if (!payload || !Array.isArray(payload.entries)) return;
+      var serverYears = {};
+      if (Array.isArray(payload.years)) {
+        payload.years.forEach(function (y) {
+          var yn = parseInt(y, 10);
+          if (!isNaN(yn)) {
+            serverYears[yn] = { holidays: {}, workdays: {} };
+          }
+        });
+      }
+      payload.entries.forEach(function (item) {
+        if (!item || !item.date) return;
+        var yn = parseInt(item.year || item.date.slice(0, 4), 10);
+        if (isNaN(yn)) return;
+        if (!serverYears[yn]) {
+          serverYears[yn] = { holidays: {}, workdays: {} };
+        }
+        if (item.type === 'holiday') {
+          serverYears[yn].holidays[item.date] = item.name || '法定节假日';
+        } else if (item.type === 'workday') {
+          serverYears[yn].workdays[item.date] = item.name || '调休上班';
+        }
+      });
+
+      Object.keys(serverYears).forEach(function (yr) {
+        YEAR_PLANS[yr] = serverYears[yr];
+      });
+      rebuildIndexes();
     }
   };
+
+  rebuildIndexes();
 
   WorkCal.Holidays = Holidays;
 
