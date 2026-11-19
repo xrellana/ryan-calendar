@@ -799,10 +799,14 @@
       }
     }
 
-    var statItems = categories.map(function (c) {
-      var count = catDaySets[c.id] ? Object.keys(catDaySets[c.id]).length : 0;
-      return { id: c.id, name: c.name, color: c.color, days: count };
-    });
+    var statItems = categories
+      .map(function (c, idx) {
+        var count = catDaySets[c.id] ? Object.keys(catDaySets[c.id]).length : 0;
+        return { id: c.id, name: c.name, color: c.color, days: count, order: idx };
+      })
+      .filter(function (item) {
+        return item.days > 0;
+      });
 
     // 若存在已删除类别的历史日程落在当期，补充统计兜底行
     var catIdSet = {};
@@ -821,39 +825,45 @@
         id: '__fallback__',
         name: '已删除类别',
         color: WorkCal.Config.fallbackCategory.color,
-        days: orphanDays
+        days: orphanDays,
+        order: categories.length + 1
       });
     }
 
-    var maxDays = 0;
-    statItems.forEach(function (item) {
-      if (item.days > maxDays) maxDays = item.days;
+    // 按天数从多到少排序（天数相同时保持原类别优先级顺序）
+    statItems.sort(function (a, b) {
+      if (b.days !== a.days) return b.days - a.days;
+      return a.order - b.order;
     });
 
-    var statsRowsHtml = statItems
-      .map(function (item) {
-        var pct = maxDays > 0 ? Math.round((item.days / maxDays) * 100) : 0;
-        return (
-          '<div class="stat-row">' +
-          '<div class="stat-row-top">' +
-          '<span class="stat-name"><span class="stat-dot" style="background:' +
-          escapeHtml(item.color) +
-          ';"></span>' +
-          escapeHtml(item.name) +
-          '</span>' +
-          '<span class="stat-value">' +
-          item.days +
-          ' 天</span>' +
-          '</div>' +
-          '<div class="stat-track"><div class="stat-fill" style="width:' +
-          pct +
-          '%;background:' +
-          escapeHtml(item.color) +
-          ';"></div></div>' +
-          '</div>'
-        );
-      })
-      .join('');
+    var maxDays = statItems.length ? statItems[0].days : 0;
+
+    var statsRowsHtml = statItems.length
+      ? statItems
+          .map(function (item) {
+            var pct = maxDays > 0 ? Math.round((item.days / maxDays) * 100) : 0;
+            return (
+              '<div class="stat-row">' +
+              '<div class="stat-row-top">' +
+              '<span class="stat-name"><span class="stat-dot" style="background:' +
+              escapeHtml(item.color) +
+              ';"></span>' +
+              escapeHtml(item.name) +
+              '</span>' +
+              '<span class="stat-value">' +
+              item.days +
+              ' 天</span>' +
+              '</div>' +
+              '<div class="stat-track"><div class="stat-fill" style="width:' +
+              pct +
+              '%;background:' +
+              escapeHtml(item.color) +
+              ';"></div></div>' +
+              '</div>'
+            );
+          })
+          .join('')
+      : '<div class="panel-empty">该期间暂无日程安排</div>';
 
     var statsPickerHtml =
       '<div class="stats-picker-row">' +
