@@ -991,7 +991,8 @@ button {
 
 .panel-item {
   width: 100%;
-  min-height: 36px;
+  flex: 0 0 auto;
+  height: auto;
   padding: 8px 10px;
   border-radius: 8px;
   border: 1px solid var(--border-subtle);
@@ -1000,7 +1001,8 @@ button {
   text-align: left;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
+  line-height: 1.4;
 }
 
 .panel-item:hover {
@@ -1010,18 +1012,19 @@ button {
 .panel-item-title {
   font-size: 13px;
   font-weight: 600;
+  line-height: 1.4;
   color: var(--text-main);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  word-break: break-word;
 }
 
 .panel-item-meta {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 4px 8px;
   font-size: 11px;
+  line-height: 1.35;
   color: var(--text-secondary);
 }
 
@@ -2107,6 +2110,7 @@ button {
 
 .search-result-item {
   width: 100%;
+  flex: 0 0 auto;
   border: none;
   border-bottom: 1px solid var(--border-subtle);
   background: transparent;
