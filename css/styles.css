@@ -40,7 +40,11 @@ body {
   font-size: 14px;
   line-height: 1.45;
   -webkit-font-smoothing: antialiased;
-  overflow-x: hidden;
+  overflow-x: clip;
+}
+
+body.modal-open {
+  overflow: hidden;
 }
 
 .hidden {
@@ -61,6 +65,13 @@ textarea {
 
 button {
   cursor: pointer;
+  touch-action: manipulation;
+}
+
+a,
+.day-cell,
+.week-col-header {
+  touch-action: manipulation;
 }
 
 /* 触控热区下限 32x32（UI-4） */
@@ -155,6 +166,7 @@ button {
    ========================================================================== */
 .gate-screen {
   min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -397,17 +409,27 @@ button {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-sm);
-  overflow: hidden;
+  overflow: visible;
+  overflow: clip;
 }
 
 /* ==========================================================================
    月视图（双层对齐网格 + 跨天整块层，FR-06 / BR-5）
    ========================================================================== */
 .month-weekdays {
+  position: sticky;
+  top: 0;
+  z-index: 20;
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
   border-bottom: 1px solid var(--border-subtle);
+  border-top-left-radius: calc(var(--radius-md) - 1px);
+  border-top-right-radius: calc(var(--radius-md) - 1px);
   background: #f8fafc;
+  background: rgba(248, 250, 252, 0.96);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 1px 0 var(--border-subtle), 0 2px 6px rgba(15, 23, 42, 0.05);
 }
 
 .month-weekday-cell {
@@ -468,7 +490,13 @@ button {
   background: var(--bg-rest-day);
 }
 
-.day-cell:hover {
+@media (hover: hover) {
+  .day-cell:hover {
+    box-shadow: inset 0 0 0 1.5px rgba(37, 99, 235, 0.35);
+  }
+}
+
+.day-cell:active {
   box-shadow: inset 0 0 0 1.5px rgba(37, 99, 235, 0.35);
 }
 
@@ -960,6 +988,7 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 10px;
 }
@@ -1109,6 +1138,7 @@ button {
   width: 100%;
   max-width: 560px;
   max-height: 90vh;
+  max-height: 90dvh;
   background: var(--bg-surface);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-md);
@@ -1154,6 +1184,8 @@ button {
 .modal-body {
   padding: 16px 18px;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -1172,6 +1204,13 @@ button {
 
 .modal-footer-between {
   justify-content: space-between;
+}
+
+.modal-footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 /* 表单元素 */
@@ -1209,6 +1248,8 @@ button {
 .select-control,
 .textarea-control {
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   min-height: 36px;
   padding: 7px 10px;
   border: 1.5px solid var(--border-strong);
@@ -1409,8 +1450,9 @@ button {
 }
 
 .palette-swatch {
-  min-width: 32px;
+  min-width: 0;
   min-height: 32px;
+  aspect-ratio: 1;
   border-radius: 7px;
   border: 2px solid transparent;
 }
@@ -1427,8 +1469,32 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 8px;
   font-size: 12px;
+}
+
+.stage-map-row {
+  padding: 6px 10px;
+}
+
+.stage-map-label {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+}
+
+.stage-map-select {
+  width: 170px;
+}
+
+.ics-reset-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
 }
 
 /* 台账导入区 */
@@ -1475,6 +1541,7 @@ button {
 .preview-table-wrap {
   max-height: 220px;
   overflow: auto;
+  -webkit-overflow-scrolling: touch;
   border: 1px solid var(--border-subtle);
   border-radius: 8px;
 }
@@ -1606,7 +1673,7 @@ button {
    ========================================================================== */
 @media (max-width: 640px) {
   .app-shell {
-    padding: 8px 8px 24px;
+    padding: 8px max(6px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(6px, env(safe-area-inset-left));
   }
 
   .topbar {
@@ -1619,37 +1686,77 @@ button {
     width: 100%;
     justify-content: space-between;
     flex-wrap: wrap;
-    gap: 8px;
+    gap: 6px;
   }
 
-  .brand {
+  .brand,
+  .btn-label-desktop,
+  #btn-import,
+  #btn-admin {
     display: none;
   }
 
+  .nav-group {
+    width: 100%;
+    gap: 5px;
+  }
+
+  .nav-group .icon-btn {
+    width: 32px;
+    min-width: 32px;
+    min-height: 32px;
+    flex-shrink: 0;
+  }
+
+  .nav-group .btn-sm {
+    min-height: 32px;
+    padding: 0 9px;
+    flex-shrink: 0;
+  }
+
   .period-title {
-    font-size: 16px;
+    flex: 1;
+    min-width: 0;
+    font-size: 15px;
     margin-left: 4px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .view-switcher {
+    padding: 2px;
+    flex-shrink: 0;
+  }
+
+  .view-tab {
+    min-height: 32px;
+    min-width: 32px;
+    padding: 0 10px;
+    font-size: 13px;
   }
 
   .action-group {
-    flex: 1;
+    flex: 1 1 auto;
+    min-width: 0;
     justify-content: flex-end;
+    flex-wrap: wrap;
     gap: 6px;
   }
 
   .action-group .btn {
+    min-height: 32px;
     padding: 0 9px;
     font-size: 12px;
   }
 
-  /* 图例窄屏精简，保证最多两行（UI-2） */
+  /* 图例窄屏精简，保证紧凑不拥挤（UI-2） */
   .legend-bar {
     padding: 7px 10px;
     gap: 6px;
   }
 
   .legend-items {
-    gap: 6px 10px;
+    gap: 5px 6px;
   }
 
   .legend-item {
@@ -1660,9 +1767,20 @@ button {
     display: none;
   }
 
-  /* 手机端月视图：休/班右上角，农历独立一行完整显示不裁切（UI-2） */
+  .legend-manage-btn {
+    min-height: 28px;
+    padding: 0 8px;
+    font-size: 12px;
+  }
+
+  /* 手机端月视图：表头冻结、休/班右上角、农历独立一行不溢格（UI-2） */
+  .month-weekday-cell {
+    padding: 7px 2px;
+    font-size: 12px;
+  }
+
   .month-week-row {
-    --span-layer-top: 40px;
+    --span-layer-top: 42px;
   }
 
   .day-cell {
@@ -1675,6 +1793,7 @@ button {
     flex-direction: column;
     align-items: flex-start;
     gap: 1px;
+    min-height: 36px;
     margin-bottom: 2px;
   }
 
@@ -1693,30 +1812,46 @@ button {
 
   .day-lunar {
     font-size: 10px;
-    line-height: 1.2;
+    line-height: 14px;
+    height: 14px;
+    width: 100%;
     max-width: 100%;
-    overflow: visible;
-    text-overflow: clip;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .day-badge {
     position: absolute;
-    top: 0;
-    right: 0;
+    top: 1px;
+    right: 1px;
     font-size: 9px;
+    line-height: 1.1;
     padding: 1px 3px;
   }
 
   .span-bar {
+    border-width: 1px;
     padding: 0 3px;
+    gap: 2px;
     font-size: 10px;
+    line-height: 1;
     border-radius: 4px;
+  }
+
+  .span-arrow {
+    font-size: 11px;
+  }
+
+  .day-singles {
+    gap: 2px;
   }
 
   .single-event-chip {
     min-height: 18px;
     padding: 1px 3px;
+    border-left-width: 2.5px;
     font-size: 10px;
+    line-height: 1.25;
   }
 
   .single-event-time {
@@ -1724,8 +1859,11 @@ button {
   }
 
   .day-more-btn {
+    min-height: 18px;
     font-size: 10px;
     padding: 1px 4px;
+    width: 100%;
+    text-align: center;
   }
 
   /* 周视图：窄屏改为“每天一行”，防止 7 列挤压中文竖排（UI-2） */
@@ -1752,15 +1890,24 @@ button {
     padding: 8px 12px 10px;
   }
 
+  .week-add-btn {
+    min-height: 36px;
+  }
+
   /* 年视图：手机 2 列（FR-02） */
   .year-view-grid {
-    padding: 10px;
+    padding: 8px;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
+    gap: 8px;
   }
 
   .year-month-card {
     padding: 7px;
+  }
+
+  .year-month-title {
+    white-space: nowrap;
+    gap: 4px;
   }
 
   .year-mini-day {
@@ -1770,17 +1917,81 @@ button {
   }
 
   .form-row-2,
-  .preview-stats-grid,
   .menu-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .preview-stats-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .modal-backdrop {
-    padding: 8px;
+    padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
   }
 
   .modal-dialog {
-    max-height: 94vh;
+    max-height: 92vh;
+    max-height: 92dvh;
+  }
+
+  .modal-header {
+    padding: 12px 14px;
+  }
+
+  .modal-body {
+    padding: 12px 14px;
+    gap: 12px;
+  }
+
+  .modal-footer {
+    padding: 10px 14px;
+  }
+
+  .cat-row {
+    gap: 6px;
+    padding: 6px;
+  }
+
+  .cat-row-actions .btn {
+    min-width: 30px;
+    padding: 0 7px;
+  }
+
+  .stage-map-row {
+    flex-wrap: wrap;
+    padding: 8px;
+  }
+
+  .stage-map-select {
+    width: 100%;
+  }
+
+  .cat-pill-tag {
+    max-width: 108px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .input-control,
+  .select-control,
+  .textarea-control {
+    font-size: 16px;
+    min-height: 40px;
+  }
+
+  .gate-screen {
+    padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  }
+
+  .gate-card {
+    padding: 24px 20px;
+  }
+
+  .toast-container {
+    left: 12px;
+    right: 12px;
+    bottom: max(14px, env(safe-area-inset-bottom));
+    max-width: none;
   }
 }
 
@@ -1861,6 +2072,14 @@ button {
   .calendar-stage {
     box-shadow: none;
     border: 1px solid #94a3b8;
+  }
+
+  .month-weekdays {
+    position: static;
+    box-shadow: none;
+    background: #f8fafc !important;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
   }
 
   .day-cell {
@@ -2321,22 +2540,68 @@ button {
 
 @media (max-width: 640px) {
   .user-chip-btn {
-    max-width: 105px;
+    max-width: 88px;
   }
 
   .search-input-wrap {
+    min-width: 0;
     max-width: none;
     width: 100%;
+  }
+
+  .search-input {
+    font-size: 16px;
+    min-height: 38px;
+  }
+
+  .search-input::placeholder {
+    font-size: 13px;
+  }
+
+  .filter-status {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .legend-filter-chip {
+    padding: 3px 8px;
+    min-height: 28px;
+  }
+
+  .search-results-head {
+    flex-wrap: wrap;
+    padding: 8px 10px;
   }
 
   .search-result-item {
     flex-wrap: wrap;
     gap: 6px;
+    padding: 9px 10px;
   }
 
   .search-result-date {
     width: 100%;
     text-align: left;
+  }
+
+  .account-summary-bar {
+    flex-wrap: wrap;
+  }
+
+  .admin-tabs {
+    padding: 6px 12px 0;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .admin-tab {
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .preview-table th,
+  .preview-table td {
+    white-space: nowrap;
   }
 
   .holiday-edit-row {
@@ -2395,6 +2660,8 @@ button {
 .panel-list.is-scrollable {
   max-height: 320px;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
   padding-right: 2px;
 }
 
@@ -2438,4 +2705,11 @@ button {
 .stats-select:focus {
   border-color: var(--accent-primary);
   box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.14);
+}
+
+@media (max-width: 640px) {
+  .stats-select {
+    font-size: 16px;
+    min-height: 34px;
+  }
 }

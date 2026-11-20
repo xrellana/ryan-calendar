@@ -30,15 +30,18 @@
     var weekDates = DU.getWeekDates(state.anchorDate);
     var s = DU.parseYMD(weekDates[0]);
     var e = DU.parseYMD(weekDates[6]);
+    var compact = isMobileViewport();
     if (s.year === e.year && s.month === e.month) {
       return s.year + '年' + s.month + '月' + s.day + '日 - ' + e.day + '日';
     }
     if (s.year === e.year) {
-      return s.year + '年' + s.month + '月' + s.day + '日 - ' + e.month + '月' + e.day + '日';
+      return compact
+        ? s.year + '年' + s.month + '/' + s.day + ' - ' + e.month + '/' + e.day
+        : s.year + '年' + s.month + '月' + s.day + '日 - ' + e.month + '月' + e.day + '日';
     }
-    return (
-      s.year + '年' + s.month + '月' + s.day + '日 - ' + e.year + '年' + e.month + '月' + e.day + '日'
-    );
+    return compact
+      ? s.year + '/' + s.month + '/' + s.day + ' - ' + e.year + '/' + e.month + '/' + e.day
+      : s.year + '年' + s.month + '月' + s.day + '日 - ' + e.year + '年' + e.month + '月' + e.day + '日';
   }
 
   function renderHeader(state) {

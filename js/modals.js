@@ -124,6 +124,7 @@
       adminState.confirmDeleteUserId = null;
       backdrop.classList.add('hidden');
       backdrop.setAttribute('aria-hidden', 'true');
+      document.body.classList.remove('modal-open');
       dialog.classList.remove('is-wide');
       dialog.innerHTML = '';
     }
@@ -135,6 +136,7 @@
       renderCurrent();
       backdrop.classList.remove('hidden');
       backdrop.setAttribute('aria-hidden', 'false');
+      document.body.classList.add('modal-open');
     }
 
     function runBusy(btn, promiseFn) {
@@ -925,14 +927,14 @@
             })
             .join('');
           return (
-            '<div class="cat-row" style="padding:6px 10px;">' +
-            '<span style="flex:1;font-weight:600;">' +
+            '<div class="cat-row stage-map-row">' +
+            '<span class="stage-map-label">' +
             esc(st) +
             '（' +
             count +
             ' 条）</span>' +
             '<span class="form-hint">映射到类别：</span>' +
-            '<select class="select-control" style="width:170px;" data-stage-map="' +
+            '<select class="select-control stage-map-select" data-stage-map="' +
             esc(st) +
             '">' +
             opts +
@@ -1024,7 +1026,7 @@
         '</div>' +
         '<div class="modal-footer modal-footer-between">' +
         '<button type="button" class="btn btn-outline" data-modal-action="reset-ledger-import">重新选择文件</button>' +
-        '<div style="display:flex;gap:8px;">' +
+        '<div class="modal-footer-actions">' +
         '<button type="button" class="btn btn-outline" data-modal-action="close">取消</button>' +
         '<button type="button" class="btn btn-primary" data-modal-action="confirm-ledger-import"' +
         (preview.entries.length === 0 ? ' disabled' : '') +
@@ -1062,6 +1064,7 @@
         '</div>' +
         '<div class="modal-body">' +
         '<div class="menu-grid">' +
+        '<button type="button" class="menu-tile" data-modal-action="go-import"><strong>📥 导入《评估项目台账》</strong><span>上传 Excel / CSV 或粘贴表格批量生成日程</span></button>' +
         '<button type="button" class="menu-tile" data-modal-action="go-categories"><strong>⚙ 类别与颜色管理</strong><span>增删改类别、排序调整同日优先级</span></button>' +
         '<button type="button" class="menu-tile" data-modal-action="go-account"><strong>👤 账号设置与日历订阅</strong><span>修改密码、获取手机自动同步 .ics 订阅地址</span></button>' +
         '<button type="button" class="menu-tile" data-modal-action="go-backup"><strong>💾 JSON 备份与恢复</strong><span>导出全部日程与类别，或从 JSON 文件还原</span></button>' +
@@ -1149,7 +1152,7 @@
         '</div>' +
         '<div class="modal-footer modal-footer-between">' +
         '<button type="button" class="btn btn-outline" data-modal-action="dismiss-legacy-local">忽略并清理本地旧缓存</button>' +
-        '<div style="display:flex;gap:8px;">' +
+        '<div class="modal-footer-actions">' +
         '<button type="button" class="btn btn-outline" data-modal-action="close">暂不处理</button>' +
         '<button type="button" class="btn btn-primary" data-modal-action="confirm-migrate-local">一键迁移到云端</button>' +
         '</div>' +
@@ -1205,7 +1208,7 @@
         '">' +
         '<button type="button" class="btn btn-primary btn-sm" data-modal-action="copy-ics-url">复制</button>' +
         '</div>' +
-        '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:6px;">' +
+        '<div class="ics-reset-row">' +
         '<span class="form-hint">若链接不慎泄露，可随时重置，旧链接将立即失效。</span>' +
         '<button type="button" class="btn btn-outline btn-sm" data-modal-action="ask-reset-ics">重置链接</button>' +
         '</div>' +
@@ -1775,6 +1778,8 @@
             );
           });
         });
+      } else if (action === 'go-import') {
+        open('import', {}, true);
       } else if (action === 'go-categories') {
         open('categories', {});
       } else if (action === 'go-backup') {
