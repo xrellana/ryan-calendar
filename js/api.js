@@ -177,6 +177,69 @@
     },
     adminCreateBackup: function () {
       return request('POST', '/api/admin/backups', {});
+    },
+
+    // 评估项目管理平台（按当前登录用户隔离）
+    evalGetState: function (today) {
+      var qs = today ? '?today=' + encodeURIComponent(today) : '';
+      return request('GET', '/api/eval/state' + qs);
+    },
+    evalCreateProject: function (data) {
+      return request('POST', '/api/eval/projects', data);
+    },
+    evalUpdateProject: function (id, patch) {
+      return request('PATCH', '/api/eval/projects/' + encodeURIComponent(id), patch);
+    },
+    evalBatchProjects: function (payload) {
+      return request('POST', '/api/eval/projects/batch', payload);
+    },
+    evalDeleteProject: function (id, today) {
+      var qs = today ? '?today=' + encodeURIComponent(today) : '';
+      return request('DELETE', '/api/eval/projects/' + encodeURIComponent(id) + qs);
+    },
+    evalImportProjects: function (items, mode, today) {
+      return request('POST', '/api/eval/projects/import', {
+        items: items,
+        mode: mode || 'append',
+        today: today || ''
+      });
+    },
+    evalLoadSampleProjects: function (today) {
+      return request('POST', '/api/eval/projects/sample', { today: today || '' });
+    },
+    evalCreateTravel: function (data) {
+      return request('POST', '/api/eval/travels', data);
+    },
+    evalUpdateTravel: function (id, patch) {
+      return request('PATCH', '/api/eval/travels/' + encodeURIComponent(id), patch);
+    },
+    evalBatchTravels: function (ids, reimb) {
+      return request('POST', '/api/eval/travels/batch', { ids: ids, reimb: reimb });
+    },
+    evalDeleteTravel: function (id) {
+      return request('DELETE', '/api/eval/travels/' + encodeURIComponent(id));
+    },
+    evalImportTravels: function (items, mode) {
+      return request('POST', '/api/eval/travels/import', {
+        items: items,
+        mode: mode || 'append'
+      });
+    },
+    evalSaveSettings: function (settings) {
+      return request('PUT', '/api/eval/settings', settings);
+    },
+    evalResetSettings: function () {
+      return request('POST', '/api/eval/settings/reset', {});
+    },
+    evalSavePreferences: function (prefs) {
+      return request('PUT', '/api/eval/preferences', prefs);
+    },
+    evalRestoreBackup: function (payload) {
+      return request('POST', '/api/eval/backup/restore', payload);
+    },
+    evalClearAll: function (today) {
+      var qs = today ? '?today=' + encodeURIComponent(today) : '';
+      return request('DELETE', '/api/eval/all' + qs);
     }
   };
 })(typeof window !== 'undefined' ? window : globalThis);

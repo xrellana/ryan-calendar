@@ -8,6 +8,7 @@ const { createAuthMiddleware, cleanupExpiredSessions } = require('./auth');
 const { autoSyncUpcomingYearIfNeeded } = require('./holiday-sync');
 const createAuthRouter = require('./routes/auth');
 const createCalendarRouter = require('./routes/calendar');
+const createEvalRouter = require('./routes/eval');
 const createAdminRouter = require('./routes/admin');
 const createIcsRouter = require('./routes/ics');
 
@@ -60,6 +61,7 @@ function createApp(options = {}) {
 
   app.use('/api/auth', createAuthRouter(db, authMw));
   app.use('/api/admin', createAdminRouter(db, authMw, { dbPath, backupDir }));
+  app.use('/api/eval', createEvalRouter(db, authMw));
   app.use('/api', createCalendarRouter(db, authMw));
 
   // API 404 与统一错误处理

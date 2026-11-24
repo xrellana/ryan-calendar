@@ -55,6 +55,7 @@
     var DU = WorkCal.DateUtils;
     var api = WorkCal.Api;
     var store = WorkCal.Storage.createStore(api);
+    var evalStore = WorkCal.EvalStore.createEvalStore(api, store);
 
     var currentUser = null;
     var lastSyncMs = 0;
@@ -62,6 +63,7 @@
 
     var now = new Date();
     var state = {
+      module: 'calendar', // calendar | eval
       view: 'month',
       anchorYear: now.getFullYear(),
       anchorMonth: now.getMonth() + 1,
@@ -72,10 +74,46 @@
       statsMonth: now.getMonth() + 1
     };
 
+    var evalUI = null;
+
+    function applyModuleVisibility() {
+      var isEval = state.module === 'eval';
+      var calWs = document.getElementById('calendar-workspace');
+      var evalWs = document.getElementById('eval-workspace');
+      if (calWs) calWs.classList.toggle('hidden', isEval);
+      if (evalWs) evalWs.classList.toggle('hidden', !isEval);
+
+      var calOnlyEls = document.querySelectorAll('[data-cal-only]');
+      for (var i = 0; i < calOnlyEls.length; i++) {
+        calOnlyEls[i].classList.toggle('hidden', isEval);
+      }
+
+      var modTabs = document.querySelectorAll('.module-tab');
+      for (var j = 0; j < modTabs.length; j++) {
+        var active = modTabs[j].getAttribute('data-module') === state.module;
+        modTabs[j].classList.toggle('active', active);
+        modTabs[j].setAttribute('aria-selected', active ? 'true' : 'false');
+      }
+    }
+
     var render = function () {
       if (!currentUser) return;
-      WorkCal.Views.renderAll(state, store);
+      applyModuleVisibility();
+      if (state.module === 'eval') {
+        if (evalUI) evalUI.render();
+      } else {
+        WorkCal.Views.renderAll(state, store);
+      }
     };
+
+    function switchModule(nextModule, evalTab) {
+      if (nextModule !== 'calendar' && nextModule !== 'eval') return;
+      state.module = nextModule;
+      if (nextModule === 'eval' && evalUI && evalTab) {
+        evalUI.setTab(evalTab);
+      }
+      render();
+    }
 
     function updateUserChrome(user) {
       currentUser = user;
@@ -92,6 +130,8 @@
     function showLoginScreen(reasonToast) {
       currentUser = null;
       store.resetMemoryState();
+      evalStore.resetMemoryState();
+      state.module = 'calendar';
       var searchInp = document.getElementById('search-input');
       if (searchInp) searchInp.value = '';
       updateUserChrome(null);
@@ -109,6 +149,7 @@
 
     var modals = WorkCal.Modals.createModalManager({
       store: store,
+      evalStore: evalStore,
       api: api,
       getCurrentUser: function () {
         return currentUser;
@@ -122,19 +163,32 @@
       },
       onDataChanged: render,
       onJumpToMonth: function (year, month) {
+        state.module = 'calendar';
         state.view = 'month';
         state.anchorYear = year;
         state.anchorMonth = month;
         state.anchorDate = DU.formatDate(year, month, 1);
         render();
       },
+      onSwitchToEval: function (tab) {
+        switchModule('eval', tab || 'projects');
+      },
       ensureMonthViewForPrint: function () {
+        state.module = 'calendar';
         if (state.view !== 'month') {
           state.view = 'month';
           render();
         }
       },
       showToast: showToast
+    });
+
+    evalUI = WorkCal.EvalUI.createEvalUI({
+      container: document.getElementById('eval-workspace'),
+      evalStore: evalStore,
+      modals: modals,
+      showToast: showToast,
+      onDataChanged: render
     });
 
     api.setUnauthorizedHandler(function () {
@@ -151,13 +205,14 @@
       setScreen('loading', '正在同步云端日程...');
 
       return Promise.all([
+        evalStore.loadFromServer(),
         store.loadFromServer(),
         api.getHolidays().catch(function () {
           return null;
         })
       ])
         .then(function (results) {
-          var holidayPayload = results[1];
+          var holidayPayload = results[2];
           if (holidayPayload && WorkCal.Holidays && WorkCal.Holidays.loadFromServer) {
             WorkCal.Holidays.loadFromServer(holidayPayload);
           }
@@ -255,6 +310,18 @@
       });
     }
 
+    // 顶栏一级模块切换（工作日程 | 评估项目）
+    var modTabs = document.querySelectorAll('.module-tab');
+    for (var mIdx = 0; mIdx < modTabs.length; mIdx++) {
+      (function (btn) {
+        btn.addEventListener('click', function () {
+          var nextMod = btn.getAttribute('data-module');
+          if (!nextMod || nextMod === state.module) return;
+          switchModule(nextMod);
+        });
+      })(modTabs[mIdx]);
+    }
+
     // 顶栏按钮绑定
     document.getElementById('btn-prev').addEventListener('click', function () {
       stepPeriod(-1);
@@ -280,7 +347,7 @@
       modals.open('event-editor', { date: DU.todayStr() });
     });
     document.getElementById('btn-import').addEventListener('click', function () {
-      modals.open('import', {}, true);
+      modals.open('eval-import-projects', {}, true);
     });
     document.getElementById('btn-more').addEventListener('click', function () {
       modals.open('more', {});
@@ -439,6 +506,7 @@
         return;
       }
       if (modals.isOpen()) return;
+      if (state.module !== 'calendar') return;
       var tag = e.target && e.target.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
       if (e.key === 'ArrowLeft') stepPeriod(-1);
@@ -464,10 +532,18 @@
       store
         .refreshIfChanged()
         .then(function (changed) {
+          if (changed) {
+            return evalStore.loadFromServer().then(function () {
+              return true;
+            });
+          }
+          return false;
+        })
+        .then(function (changed) {
           lastSyncMs = Date.now();
           if (changed) {
             render();
-            showToast('已自动同步最新日程', 'success');
+            showToast('已自动同步最新云端数据', 'success');
           }
         })
         .catch(function () {

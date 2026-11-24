@@ -77,12 +77,14 @@
 
   function createModalManager(ctx) {
     var store = ctx.store;
+    var evalStore = ctx.evalStore || null;
     var api = ctx.api || WorkCal.Api;
     var getCurrentUser = ctx.getCurrentUser;
     var onUserUpdated = ctx.onUserUpdated;
     var onLogout = ctx.onLogout;
     var onDataChanged = ctx.onDataChanged;
     var onJumpToMonth = ctx.onJumpToMonth;
+    var onSwitchToEval = ctx.onSwitchToEval;
     var showToast = ctx.showToast;
 
     var backdrop = document.getElementById('modal-backdrop');
@@ -99,6 +101,8 @@
     var newCatColor = '#7C3AED';
     // 台账导入预览状态
     var ledgerParseState = null;
+    var evalProjectImportState = {};
+    var evalTravelImportState = {};
     // 管理员后台状态
     var adminState = {
       tab: 'users',
@@ -163,14 +167,190 @@
         });
     }
 
+    function evalModalCtx() {
+      return {
+        store: store,
+        evalStore: evalStore,
+        payload: currentPayload,
+        runBusy: runBusy,
+        onDataChanged: onDataChanged,
+        showToast: showToast,
+        closeAfterBusy: function () {
+          isBusy = false;
+          close();
+        },
+        onSwitchBackToStandardEvent: function (restorePayload) {
+          open('event-editor', restorePayload || {});
+        },
+        openConfirmDeleteProject: function (projectId) {
+          open('confirm-delete-eval-project', { projectId: projectId });
+        },
+        openConfirmDeleteTravel: function (travelId) {
+          open('confirm-delete-eval-travel', { travelId: travelId });
+        },
+        onAfterProjectImport: function () {
+          if (onSwitchToEval) onSwitchToEval('projects');
+        }
+      };
+    }
+
+    function renderConfirmDeleteEvalProject() {
+      var proj = evalStore && currentPayload.projectId ? evalStore.getProjectById(currentPayload.projectId) : null;
+      if (!proj) {
+        close();
+        return;
+      }
+      dialog.innerHTML =
+        '<div class="modal-header">' +
+        '<h2 id="modal-title" class="modal-title">确认删除评估项目</h2>' +
+        '<button type="button" class="modal-close" data-modal-action="close" aria-label="关闭">×</button>' +
+        '</div>' +
+        '<div class="modal-body">' +
+        '<div class="danger-box">' +
+        '<strong>确定删除项目「' +
+        esc(proj.name) +
+        '（' +
+        esc(proj.stage) +
+        '）」？此操作不可撤销。</strong><br>' +
+        '<div style="margin-top:6px;">删除后将同步移除工作日程中对应的「外出评估」日程记录；若该项目有另一阶段记录仍会保留，且历史差旅支出记录不受影响。</div>' +
+        '</div>' +
+        '</div>' +
+        '<div class="modal-footer modal-footer-between">' +
+        '<button type="button" class="btn btn-outline" data-modal-action="close">取消</button>' +
+        '<button type="button" class="btn btn-danger-solid" data-modal-action="confirm-delete-eval-project">确认删除</button>' +
+        '</div>';
+    }
+
+    function renderConfirmDeleteEvalTravel() {
+      var tr = evalStore && currentPayload.travelId ? evalStore.getTravelById(currentPayload.travelId) : null;
+      if (!tr) {
+        close();
+        return;
+      }
+      dialog.innerHTML =
+        '<div class="modal-header">' +
+        '<h2 id="modal-title" class="modal-title">确认删除差旅记录</h2>' +
+        '<button type="button" class="modal-close" data-modal-action="close" aria-label="关闭">×</button>' +
+        '</div>' +
+        '<div class="modal-body">' +
+        '<div class="danger-box">' +
+        '<strong>确定删除该笔差旅记录？此操作不可撤销。</strong><br>' +
+        '<div style="margin-top:6px;">项目：<strong>' +
+        esc(tr.name) +
+        '</strong> · 金额：¥' +
+        esc(WorkCal.EvalCore.formatMoney(tr.amount)) +
+        '（' +
+        esc(tr.date) +
+        '）</div>' +
+        '</div>' +
+        '</div>' +
+        '<div class="modal-footer modal-footer-between">' +
+        '<button type="button" class="btn btn-outline" data-modal-action="close">取消</button>' +
+        '<button type="button" class="btn btn-danger-solid" data-modal-action="confirm-delete-eval-travel">确认删除</button>' +
+        '</div>';
+    }
+
+    function renderConfirmResetEvalSettings() {
+      dialog.innerHTML =
+        '<div class="modal-header">' +
+        '<h2 id="modal-title" class="modal-title">确认恢复默认规则与费率</h2>' +
+        '<button type="button" class="modal-close" data-modal-action="close" aria-label="关闭">×</button>' +
+        '</div>' +
+        '<div class="modal-body">' +
+        '<div class="danger-box">' +
+        '<strong>确定将「评估天数规则」和「单位评估费」恢复为系统默认值吗？</strong><br>' +
+        '<div style="margin-top:6px;">恢复后，未手工改写费用的项目将按默认费率实时重算；已手工改过的费用不受影响。</div>' +
+        '</div>' +
+        '</div>' +
+        '<div class="modal-footer modal-footer-between">' +
+        '<button type="button" class="btn btn-outline" data-modal-action="close">取消</button>' +
+        '<button type="button" class="btn btn-danger-solid" data-modal-action="confirm-reset-eval-settings">确认恢复默认</button>' +
+        '</div>';
+    }
+
+    function renderConfirmClearEvalAll() {
+      var pCnt = evalStore ? evalStore.getProjects().length : 0;
+      var tCnt = evalStore ? evalStore.getTravels().length : 0;
+      dialog.innerHTML =
+        '<div class="modal-header">' +
+        '<h2 id="modal-title" class="modal-title">确认清空全部评估数据</h2>' +
+        '<button type="button" class="modal-close" data-modal-action="close" aria-label="关闭">×</button>' +
+        '</div>' +
+        '<div class="modal-body">' +
+        '<div class="danger-box">' +
+        '<strong>⚠️ 不可撤销操作确认：</strong><br>' +
+        '即将永久清空当前账号下的 <strong>' +
+        pCnt +
+        '</strong> 条评估项目记录（含工作日程中对应关联日程）、<strong>' +
+        tCnt +
+        '</strong> 笔差旅记录，并将天数规则与费率恢复默认。<br>' +
+        '<div style="margin-top:6px;">其他类别的手工工作日程不受影响。建议先导出 JSON 备份。</div>' +
+        '</div>' +
+        '</div>' +
+        '<div class="modal-footer modal-footer-between">' +
+        '<button type="button" class="btn btn-outline" data-modal-action="close">取消</button>' +
+        '<button type="button" class="btn btn-danger-solid" data-modal-action="confirm-clear-eval-all">确认全部清空</button>' +
+        '</div>';
+    }
+
+    function renderConfirmRestoreEvalJson() {
+      var data = currentPayload.backupData || {};
+      var inProj = Array.isArray(data.projects) ? data.projects.length : 0;
+      var inTrv = Array.isArray(data.travels) ? data.travels.length : 0;
+      var curProj = evalStore ? evalStore.getProjects().length : 0;
+      var curTrv = evalStore ? evalStore.getTravels().length : 0;
+      dialog.innerHTML =
+        '<div class="modal-header">' +
+        '<h2 id="modal-title" class="modal-title">确认恢复评估平台 JSON 备份</h2>' +
+        '<button type="button" class="modal-close" data-modal-action="close" aria-label="关闭">×</button>' +
+        '</div>' +
+        '<div class="modal-body">' +
+        '<div class="danger-box">' +
+        '<strong>覆盖恢复确认：</strong><br>' +
+        '将用备份文件中的 <strong>' +
+        inProj +
+        '</strong> 条项目、<strong>' +
+        inTrv +
+        '</strong> 笔差旅及规则设置，完整覆盖当前账号现有的 <strong>' +
+        curProj +
+        '</strong> 条项目与 <strong>' +
+        curTrv +
+        '</strong> 笔差旅，并同步更新工作日程中的评估项目排期（其他类别日程不受影响）。' +
+        '</div>' +
+        '</div>' +
+        '<div class="modal-footer modal-footer-between">' +
+        '<button type="button" class="btn btn-outline" data-modal-action="close">取消</button>' +
+        '<button type="button" class="btn btn-danger-solid" data-modal-action="confirm-restore-eval-json">确认覆盖恢复</button>' +
+        '</div>';
+    }
+
     function renderCurrent() {
       if (currentType === 'day-detail') renderDayDetail();
       else if (currentType === 'event-editor') renderEventEditor();
       else if (currentType === 'confirm-delete-event') renderConfirmDeleteEvent();
       else if (currentType === 'confirm-delete-cat') renderConfirmDeleteCat();
       else if (currentType === 'categories') renderCategoryManager();
-      else if (currentType === 'import') renderLedgerImport();
-      else if (currentType === 'more') renderMoreMenu();
+      else if (currentType === 'import' || currentType === 'eval-import-projects') {
+        dialog.classList.add('is-wide');
+        WorkCal.EvalModals.renderProjectImportModal(dialog, evalModalCtx(), evalProjectImportState);
+      } else if (currentType === 'eval-import-travels') {
+        dialog.classList.add('is-wide');
+        WorkCal.EvalModals.renderTravelImportModal(dialog, evalModalCtx(), evalTravelImportState);
+      } else if (currentType === 'eval-project-editor') {
+        WorkCal.EvalModals.renderProjectEditor(dialog, evalModalCtx());
+      } else if (currentType === 'eval-travel-editor') {
+        WorkCal.EvalModals.renderTravelEditor(dialog, evalModalCtx());
+      } else if (currentType === 'confirm-delete-eval-project') {
+        renderConfirmDeleteEvalProject();
+      } else if (currentType === 'confirm-delete-eval-travel') {
+        renderConfirmDeleteEvalTravel();
+      } else if (currentType === 'confirm-reset-eval-settings') {
+        renderConfirmResetEvalSettings();
+      } else if (currentType === 'confirm-clear-eval-all') {
+        renderConfirmClearEvalAll();
+      } else if (currentType === 'confirm-restore-eval-json') {
+        renderConfirmRestoreEvalJson();
+      } else if (currentType === 'more') renderMoreMenu();
       else if (currentType === 'backup') renderBackupModal();
       else if (currentType === 'clear-confirm') renderClearConfirm();
       else if (currentType === 'migrate-local') renderMigrateLocalModal();
@@ -232,7 +412,7 @@
               esc(cat.name) +
               '</span>' +
               '<span class="tag-badge">' +
-              (ev.source === 'ledger' ? '台账导入' : '手工录入') +
+              (ev.source === 'eval' ? '评估项目' : ev.source === 'ledger' ? '台账导入' : '手工录入') +
               '</span>';
 
             if (ev.ledgerMeta && ev.ledgerMeta.stage) {
@@ -310,12 +490,45 @@
       var categories = store.getCategories();
       var editing = currentPayload.eventId ? store.getEventById(currentPayload.eventId) : null;
       var draft = currentPayload.draft || null;
+      var assessId = WorkCal.Config.protectedAssessmentCategoryId || 'cat-assessment';
+
+      // 编辑已关联评估项目的「外出评估」日程时，直接切换至完整评估项目编辑弹窗（双向同步）
+      if (editing && editing.evalProjectId && evalStore && evalStore.getProjectById(editing.evalProjectId)) {
+        currentType = 'eval-project-editor';
+        currentPayload = {
+          projectId: editing.evalProjectId,
+          fromCalendar: true,
+          calendarEventId: editing.id
+        };
+        WorkCal.EvalModals.renderProjectEditor(dialog, evalModalCtx());
+        return;
+      }
+
+      var firstNonAssess = null;
+      for (var fi = 0; fi < categories.length; fi++) {
+        if (categories[fi].id !== assessId) {
+          firstNonAssess = categories[fi];
+          break;
+        }
+      }
 
       var defaultCatId =
         (draft && draft.categoryId) ||
         (editing && editing.categoryId) ||
         currentPayload.categoryId ||
-        (categories[0] ? categories[0].id : '__fallback__');
+        (firstNonAssess ? firstNonAssess.id : categories[0] ? categories[0].id : '__fallback__');
+
+      // 若显式以「外出评估」新建日程，直接进入评估项目同步表单
+      if (!editing && defaultCatId === assessId && evalStore) {
+        currentType = 'eval-project-editor';
+        currentPayload = {
+          fromCalendar: true,
+          date: currentPayload.date || (draft && draft.startDate) || DU.todayStr(),
+          draft: draft
+        };
+        WorkCal.EvalModals.renderProjectEditor(dialog, evalModalCtx());
+        return;
+      }
 
       var activeCat = store.getCategory(defaultCatId);
       if (activeCat.isFallback && categories.length && !editing && !draft) {
@@ -480,6 +693,18 @@
         document.getElementById('evt-time-row').classList.toggle('hidden', allDayChk.checked);
       });
       catSelect.addEventListener('change', function () {
+        if (catSelect.value === assessId && evalStore) {
+          var formDraft = readEditorForm();
+          currentType = 'eval-project-editor';
+          currentPayload = {
+            fromCalendar: true,
+            calendarEventId: editing ? editing.id : '',
+            date: formDraft.startDate || DU.todayStr(),
+            draft: formDraft
+          };
+          WorkCal.EvalModals.renderProjectEditor(dialog, evalModalCtx());
+          return;
+        }
         var cat = store.getCategory(catSelect.value);
         var st = Color.getEventStyles(cat.color);
         var wrap = titleInput.parentElement;
@@ -598,6 +823,9 @@
         ' · 类别：' +
         esc(cat.name) +
         '</div>' +
+        (ev.evalProjectId
+          ? '<div style="margin-top:8px;color:#b91c1c;font-weight:600;">⚠️ 该日程关联「评估项目管理平台」的项目记录，删除后将同步删除对应的项目记录（历史差旅支出保留）。</div>'
+          : '') +
         '</div>' +
         '</div>' +
         '<div class="modal-footer modal-footer-between">' +
@@ -678,6 +906,9 @@
       var listHtml = cats.length
         ? cats
             .map(function (c, idx) {
+              var isProtected = Boolean(
+                c.protected || c.id === (WorkCal.Config.protectedAssessmentCategoryId || 'cat-assessment')
+              );
               var paletteHtml =
                 openPaletteForId === c.id ? renderPaletteHtml(c.id, c.color) : '';
               return (
@@ -699,7 +930,10 @@
                 esc(c.name) +
                 '" data-cat-rename="' +
                 esc(c.id) +
-                '" aria-label="类别名称">' +
+                '"' +
+                (isProtected ? ' readonly title="系统保护类别，不可改名（可换色与调序）"' : '') +
+                ' aria-label="类别名称">' +
+                (isProtected ? '<span class="tag-badge" style="background:#fff7ed;color:#c2410c;">保护</span>' : '') +
                 '<div class="cat-row-actions">' +
                 '<button type="button" class="btn btn-subtle btn-sm" data-modal-action="move-cat-up" data-cat-id="' +
                 esc(c.id) +
@@ -713,7 +947,9 @@
                 ' title="下移降低优先级">↓</button>' +
                 '<button type="button" class="btn btn-danger btn-sm" data-modal-action="ask-delete-cat" data-cat-id="' +
                 esc(c.id) +
-                '" title="删除类别">删</button>' +
+                '"' +
+                (isProtected ? ' disabled title="系统保护类别不可删除"' : ' title="删除类别"') +
+                '>删</button>' +
                 '</div>' +
                 '</div>' +
                 paletteHtml +
@@ -1111,16 +1347,26 @@
     }
 
     function renderClearConfirm() {
-      var count = store.getEvents().length;
+      var allEvts = store.getEvents();
+      var manualCount = allEvts.filter(function (e) {
+        return !e.evalProjectId;
+      }).length;
+      var evalCount = allEvts.length - manualCount;
       dialog.innerHTML =
         '<div class="modal-header">' +
-        '<h2 id="modal-title" class="modal-title">清空全部日程</h2>' +
+        '<h2 id="modal-title" class="modal-title">清空全部普通日程</h2>' +
         '<button type="button" class="modal-close" data-modal-action="close" aria-label="关闭">×</button>' +
         '</div>' +
         '<div class="modal-body">' +
-        '<div class="danger-box"><strong>⚠️ 不可恢复操作提醒：</strong><br>即将永久删除云端保存的全部 <strong>' +
-        count +
-        '</strong> 条日程（类别设置会保留）。建议先下载 JSON 备份再继续。</div>' +
+        '<div class="danger-box"><strong>⚠️ 不可恢复操作提醒：</strong><br>即将永久删除云端保存的 <strong>' +
+        manualCount +
+        '</strong> 条普通日程（类别设置会保留）。' +
+        (evalCount > 0
+          ? '<br>另有 <strong>' +
+            evalCount +
+            '</strong> 条由「评估项目管理平台」联动的日程将被自动保留（如需清空请前往「评估项目 → 设置」）。'
+          : '') +
+        '建议先下载 JSON 备份再继续。</div>' +
         '<div><button type="button" class="btn btn-outline btn-sm" data-modal-action="download-json">先导出 JSON 备份</button></div>' +
         '</div>' +
         '<div class="modal-footer modal-footer-between">' +
@@ -1593,7 +1839,62 @@
       if (action === 'close') {
         savedEditorDraft = null;
         ledgerParseState = null;
+        evalProjectImportState = {};
+        evalTravelImportState = {};
         close();
+      } else if (action === 'confirm-delete-eval-project') {
+        var delPid = currentPayload.projectId;
+        runBusy(target, function () {
+          return evalStore.deleteProject(delPid).then(function () {
+            onDataChanged();
+            isBusy = false;
+            close();
+            showToast('已删除评估项目及对应工作日程', 'success');
+          });
+        });
+      } else if (action === 'confirm-delete-eval-travel') {
+        var delTid = currentPayload.travelId;
+        runBusy(target, function () {
+          return evalStore.deleteTravel(delTid).then(function () {
+            onDataChanged();
+            isBusy = false;
+            close();
+            showToast('已删除差旅记录', 'success');
+          });
+        });
+      } else if (action === 'confirm-reset-eval-settings') {
+        runBusy(target, function () {
+          return evalStore.resetSettings().then(function () {
+            onDataChanged();
+            isBusy = false;
+            close();
+            showToast('已恢复默认天数规则与费率，费用已实时重算', 'success');
+          });
+        });
+      } else if (action === 'confirm-clear-eval-all') {
+        runBusy(target, function () {
+          target.textContent = '清空中...';
+          return evalStore.clearAllData().then(function () {
+            onDataChanged();
+            isBusy = false;
+            close();
+            showToast('已清空全部评估项目、差旅数据并恢复默认设置', 'success');
+          });
+        });
+      } else if (action === 'confirm-restore-eval-json') {
+        var backupData = currentPayload.backupData;
+        runBusy(target, function () {
+          target.textContent = '恢复中...';
+          return evalStore.restoreBackup(backupData).then(function (res) {
+            onDataChanged();
+            isBusy = false;
+            close();
+            showToast(
+              '已恢复 ' + res.projects + ' 条项目、' + res.travels + ' 笔差旅并同步工作日程',
+              'success'
+            );
+          });
+        });
       } else if (action === 'add-on-day') {
         open('event-editor', { date: target.getAttribute('data-date') });
       } else if (action === 'edit-event') {
@@ -1615,8 +1916,15 @@
         var fromView = currentPayload.from;
         var retDate = currentPayload.date;
         runBusy(target, function () {
-          return store.deleteEvent(delId).then(function () {
-            showToast('已删除日程', 'success');
+          return store.deleteEvent(delId).then(function (res) {
+            var syncedProj = res && res.deletedEvalProjectId;
+            if (syncedProj && evalStore) {
+              evalStore.removeProjectLocally(syncedProj);
+            }
+            showToast(
+              syncedProj ? '已删除日程并同步删除关联的评估项目' : '已删除日程',
+              'success'
+            );
             onDataChanged();
             isBusy = false;
             if (fromView === 'day-detail' && retDate) {
@@ -1847,11 +2155,15 @@
       } else if (action === 'confirm-clear-all') {
         runBusy(target, function () {
           target.textContent = '清空中...';
-          return store.clearAllEvents().then(function (deleted) {
+          return store.clearAllEvents().then(function (res) {
             onDataChanged();
             isBusy = false;
             close();
-            showToast('已清空全部 ' + deleted + ' 条日程', 'success');
+            var msg = '已清空 ' + res.deleted + ' 条普通日程';
+            if (res.skippedEvalCount > 0) {
+              msg += '（已保留 ' + res.skippedEvalCount + ' 条评估项目关联日程）';
+            }
+            showToast(msg, 'success');
           });
         });
       } else if (action === 'confirm-migrate-local') {
@@ -2112,6 +2424,8 @@
       if (e.target === backdrop && !isBusy) {
         savedEditorDraft = null;
         ledgerParseState = null;
+        evalProjectImportState = {};
+        evalTravelImportState = {};
         close();
       }
     });

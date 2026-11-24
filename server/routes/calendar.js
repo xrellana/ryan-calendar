@@ -4,11 +4,14 @@ const express = require('express');
 const { generateId } = require('../auth');
 const {
   withTransaction,
+  ensureProtectedAssessmentCategory,
   listCategoriesForUser,
   listEventsForUser,
   rowToEvent,
-  getUserStateUpdatedAt,
-  getAllHolidaysPayload
+  buildCalendarStateResponse,
+  getAllHolidaysPayload,
+  PROTECTED_ASSESSMENT_CAT_ID,
+  PROTECTED_ASSESSMENT_CAT_NAME
 } = require('../db');
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -135,12 +138,7 @@ function normalizeEventPayload(raw, existing = null) {
 }
 
 function buildStateResponse(db, userId) {
-  return {
-    version: 1,
-    categories: listCategoriesForUser(db, userId),
-    events: listEventsForUser(db, userId),
-    updatedAt: getUserStateUpdatedAt(db, userId) || new Date().toISOString()
-  };
+  return buildCalendarStateResponse(db, userId);
 }
 
 function createCalendarRouter(db, authMw) {
@@ -220,6 +218,9 @@ function createCalendarRouter(db, authMw) {
       if (!cleaned) {
         return res.status(400).json({ error: '类别名称不能为空' });
       }
+      if (cid === PROTECTED_ASSESSMENT_CAT_ID && cleaned !== PROTECTED_ASSESSMENT_CAT_NAME) {
+        return res.status(400).json({ error: `「${PROTECTED_ASSESSMENT_CAT_NAME}」为系统保护类别，不可修改名称` });
+      }
       nextName = cleaned;
     }
     if (req.body && req.body.color !== undefined) {
@@ -232,13 +233,16 @@ function createCalendarRouter(db, authMw) {
     ).run(nextName, nextColor, now, req.user.id, cid);
 
     res.json({
-      category: { id: cid, name: nextName, color: nextColor },
+      category: { id: cid, name: nextName, color: nextColor, protected: cid === PROTECTED_ASSESSMENT_CAT_ID },
       categories: listCategoriesForUser(db, req.user.id)
     });
   });
 
   router.delete('/categories/:id', (req, res) => {
     const cid = String(req.params.id || '');
+    if (cid === PROTECTED_ASSESSMENT_CAT_ID) {
+      return res.status(400).json({ error: `「${PROTECTED_ASSESSMENT_CAT_NAME}」为系统保护类别，不可删除` });
+    }
     const info = db
       .prepare('DELETE FROM categories WHERE user_id = ? AND id = ?')
       .run(req.user.id, cid);
@@ -307,6 +311,10 @@ function createCalendarRouter(db, authMw) {
       return res.status(400).json({ error: err.message });
     }
 
+    if (existing.eval_project_id && data.categoryId !== PROTECTED_ASSESSMENT_CAT_ID) {
+      return res.status(400).json({ error: '评估项目关联日程不可更改类别' });
+    }
+
     const now = new Date().toISOString();
     db.prepare(
       `UPDATE events
@@ -335,22 +343,45 @@ function createCalendarRouter(db, authMw) {
 
   router.delete('/events/:id', (req, res) => {
     const eid = String(req.params.id || '');
-    const info = db
-      .prepare('DELETE FROM events WHERE user_id = ? AND id = ?')
-      .run(req.user.id, eid);
-    if (info.changes === 0) {
+    const existing = db
+      .prepare('SELECT id, eval_project_id FROM events WHERE user_id = ? AND id = ?')
+      .get(req.user.id, eid);
+    if (!existing) {
       return res.status(404).json({ error: '日程不存在' });
     }
-    res.json({ ok: true });
+
+    withTransaction(db, () => {
+      db.prepare('DELETE FROM events WHERE user_id = ? AND id = ?').run(req.user.id, eid);
+      if (existing.eval_project_id) {
+        db.prepare('DELETE FROM eval_projects WHERE user_id = ? AND id = ?').run(
+          req.user.id,
+          existing.eval_project_id
+        );
+      }
+    });
+
+    res.json({
+      ok: true,
+      deletedEvalProjectId: existing.eval_project_id || ''
+    });
   });
 
   router.delete('/events', (req, res) => {
-    const info = db.prepare('DELETE FROM events WHERE user_id = ?').run(req.user.id);
-    res.json({ ok: true, deleted: info.changes });
+    const skippedRow = db
+      .prepare("SELECT COUNT(*) AS cnt FROM events WHERE user_id = ? AND eval_project_id != ''")
+      .get(req.user.id);
+    const info = db
+      .prepare("DELETE FROM events WHERE user_id = ? AND eval_project_id = ''")
+      .run(req.user.id);
+    res.json({
+      ok: true,
+      deleted: info.changes,
+      skippedEvalCount: skippedRow ? skippedRow.cnt : 0
+    });
   });
 
   // -------------------------------------------------------------------------
-  // 台账批量导入（仅更新 source='ledger' 且 ledger_key 匹配项，绝不覆盖手填）
+  // 台账批量导入（仅更新 source='ledger' 且 ledger_key 匹配项，绝不覆盖手填与评估项目联动项）
   // -------------------------------------------------------------------------
   router.post('/events/import-ledger', (req, res) => {
     const entries = req.body && req.body.entries;
@@ -368,7 +399,7 @@ function createCalendarRouter(db, authMw) {
     try {
       withTransaction(db, () => {
         const existingRows = db
-          .prepare("SELECT id, ledger_key FROM events WHERE user_id = ? AND source = 'ledger' AND ledger_key != ''")
+          .prepare("SELECT id, ledger_key FROM events WHERE user_id = ? AND source = 'ledger' AND ledger_key != '' AND eval_project_id = ''")
           .all(req.user.id);
         const keyToId = new Map();
         for (const r of existingRows) {
@@ -568,7 +599,7 @@ function createCalendarRouter(db, authMw) {
       withTransaction(db, () => {
         if (mode === 'replace') {
           db.prepare('DELETE FROM categories WHERE user_id = ?').run(req.user.id);
-          db.prepare('DELETE FROM events WHERE user_id = ?').run(req.user.id);
+          db.prepare("DELETE FROM events WHERE user_id = ? AND eval_project_id = ''").run(req.user.id);
         }
 
         const existingCatIds = new Set(
@@ -642,6 +673,7 @@ function createCalendarRouter(db, authMw) {
           existingEvtIds.add(eid);
           importedEvents++;
         });
+        ensureProtectedAssessmentCategory(db, req.user.id);
       });
     } catch (err) {
       return res.status(400).json({ error: err.message || '恢复数据失败' });
