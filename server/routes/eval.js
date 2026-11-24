@@ -545,36 +545,40 @@ function createEvalRouter(db, authMw) {
     const now = new Date().toISOString();
     let added = 0;
 
-    withTransaction(db, () => {
-      const insertStmt = db.prepare(
-        `INSERT INTO eval_projects (
-           id, user_id, name, level, role, stage, start_date, end_date,
-           status, settle, note, fee_manual, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      );
-      for (const s of samples) {
-        const data = normalizeProjectPayload(s, settings, { allowUnscheduled: false });
-        const id = generateId('p');
-        insertStmt.run(
-          id,
-          userId,
-          data.name,
-          data.level,
-          data.role,
-          data.stage,
-          data.start,
-          data.end,
-          data.status,
-          data.settle,
-          data.note,
-          data.feeManual,
-          now,
-          now
+    try {
+      withTransaction(db, () => {
+        const insertStmt = db.prepare(
+          `INSERT INTO eval_projects (
+             id, user_id, name, level, role, stage, start_date, end_date,
+             status, settle, note, fee_manual, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         );
-        syncProjectToCalendarEvent(db, userId, Object.assign({ id, createdAt: now, updatedAt: now }, data));
-        added++;
-      }
-    });
+        for (const s of samples) {
+          const data = normalizeProjectPayload(s, settings, { allowUnscheduled: false });
+          const id = generateId('p');
+          insertStmt.run(
+            id,
+            userId,
+            data.name,
+            data.level,
+            data.role,
+            data.stage,
+            data.start,
+            data.end,
+            data.status,
+            data.settle,
+            data.note,
+            data.feeManual,
+            now,
+            now
+          );
+          syncProjectToCalendarEvent(db, userId, Object.assign({ id, createdAt: now, updatedAt: now }, data));
+          added++;
+        }
+      });
+    } catch (err) {
+      return res.status(400).json({ error: err.message || '载入示例数据失败' });
+    }
 
     res.json({
       count: added,

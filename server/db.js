@@ -178,9 +178,13 @@ function initDatabase({ dbPath, backupDir } = {}) {
   const bootstrapInfo = ensureInitialAdmin(db);
 
   // 为所有已有账号确保系统受保护类别「外出评估」存在且名称一致
+  // 并把旧版「导入台账」生成的外出评估日程迁移为评估项目（幂等：已关联的日程不会重复处理）
   const allUsers = db.prepare('SELECT id FROM users').all();
   for (const u of allUsers) {
-    ensureProtectedAssessmentCategory(db, u.id);
+    withTransaction(db, () => {
+      ensureProtectedAssessmentCategory(db, u.id);
+      migrateLegacyLedgerEvents(db, u.id);
+    });
   }
 
   return {
@@ -197,6 +201,31 @@ function ensureProtectedAssessmentCategory(db, userId) {
     .get(userId, PROTECTED_ASSESSMENT_CAT_ID);
   const now = new Date().toISOString();
   if (!existing) {
+    // 用户曾删掉原类别又自建了同名「外出评估」时，直接接管该类别（沿用其颜色与排序），避免出现两个同名类别
+    const sameName = db
+      .prepare(
+        'SELECT id, color, sort_order FROM categories WHERE user_id = ? AND name = ? ORDER BY sort_order ASC LIMIT 1'
+      )
+      .get(userId, PROTECTED_ASSESSMENT_CAT_NAME);
+    if (sameName) {
+      db.prepare(
+        `INSERT OR IGNORE INTO categories (id, user_id, name, color, sort_order, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        PROTECTED_ASSESSMENT_CAT_ID,
+        userId,
+        PROTECTED_ASSESSMENT_CAT_NAME,
+        sameName.color,
+        sameName.sort_order,
+        now,
+        now
+      );
+      db.prepare(
+        'UPDATE events SET category_id = ?, updated_at = ? WHERE user_id = ? AND category_id = ?'
+      ).run(PROTECTED_ASSESSMENT_CAT_ID, now, userId, sameName.id);
+      db.prepare('DELETE FROM categories WHERE user_id = ? AND id = ?').run(userId, sameName.id);
+      return;
+    }
     const maxRow = db
       .prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM categories WHERE user_id = ?')
       .get(userId);
@@ -541,6 +570,166 @@ function deleteCalendarEventForProject(db, userId, projectId) {
 }
 
 /**
+ * 关联日程在日历侧改了日期时，回写到评估项目并重新同步日程（标题/备注仍以项目为准）
+ * 单日日程的 endDate 为空，回写时视为结束日 = 开始日，避免项目天数变成 0
+ */
+function applyEventDatesToProject(db, userId, projectId, startDate, endDate) {
+  const row = db
+    .prepare('SELECT * FROM eval_projects WHERE user_id = ? AND id = ?')
+    .get(userId, projectId);
+  if (!row) return null;
+  const nextEnd = endDate && endDate > startDate ? endDate : startDate;
+  const now = new Date().toISOString();
+  db.prepare(
+    'UPDATE eval_projects SET start_date = ?, end_date = ?, updated_at = ? WHERE user_id = ? AND id = ?'
+  ).run(startDate, nextEnd, now, userId, projectId);
+  const updated = db
+    .prepare('SELECT * FROM eval_projects WHERE user_id = ? AND id = ?')
+    .get(userId, projectId);
+  return syncProjectToCalendarEvent(db, userId, rowToEvalProject(updated));
+}
+
+// =========================================================================
+// 旧版「导入台账」日程 -> 评估项目 迁移
+// =========================================================================
+const LEGACY_LEVEL_MAP = {
+  1: '一级', 2: '二级', 3: '三级', 4: '四级',
+  一: '一级', 二: '二级', 三: '三级', 四: '四级'
+};
+
+function parseLegacyLevel(raw) {
+  const m = String(raw || '').match(/[一二三四1-4]/);
+  return m ? LEGACY_LEVEL_MAP[m[0]] : null;
+}
+
+function parseLegacyRole(raw) {
+  const s = String(raw || '').trim();
+  if (s.includes('组长') || s === '长') return '组长';
+  if (s.includes('组员') || s.includes('成员') || s === '员') return '组员';
+  return null;
+}
+
+function parseLegacyStage(raw) {
+  const s = String(raw || '').trim();
+  if (s.includes('正式')) return '正式评估';
+  if (s.includes('预')) return '预评估';
+  return null;
+}
+
+// 旧台账日程备注格式为「阶段：X | 等级：Y | 角色：Z | 原始备注」，只保留原始备注部分
+function extractLegacyUserNote(notes) {
+  return String(notes || '')
+    .split(' | ')
+    .filter((part) => !/^(阶段|等级|角色|状态)：/.test(part.trim()))
+    .join(' | ')
+    .trim();
+}
+
+function inferLegacyStatus(start, end, today) {
+  if (end < today) return '已完成';
+  if (start <= today) return '进行中';
+  return '待开始';
+}
+
+/**
+ * 把旧版台账导入的「外出评估」日程（source='ledger' 且未关联项目）转成评估项目并建立关联
+ * - 等级/角色/阶段识别不出时使用默认值（二级/组员/预评估），并在项目备注里标记待核对
+ * - 已存在同名+同阶段+同开始日期的项目时：该项目还没有关联日程则直接认领，已有关联日程则删除这条重复的旧日程
+ * - 只处理类别为 cat-assessment 的日程；调用方负责包事务
+ */
+function migrateLegacyLedgerEvents(db, userId, todayStr) {
+  const today = EvalCore.isValidDateStr(todayStr) ? todayStr : EvalCore.getTodayShanghai();
+  const legacyRows = db
+    .prepare(
+      `SELECT * FROM events
+       WHERE user_id = ? AND source = 'ledger' AND eval_project_id = '' AND category_id = ?
+       ORDER BY start_date ASC, created_at ASC`
+    )
+    .all(userId, PROTECTED_ASSESSMENT_CAT_ID);
+  const result = { migrated: 0, linked: 0, removedDuplicates: 0 };
+  if (!legacyRows.length) return result;
+
+  const findProject = db.prepare(
+    'SELECT * FROM eval_projects WHERE user_id = ? AND name = ? AND stage = ? AND start_date = ? LIMIT 1'
+  );
+  const findLinkedEvent = db.prepare(
+    'SELECT id FROM events WHERE user_id = ? AND eval_project_id = ? LIMIT 1'
+  );
+  const linkEvent = db.prepare('UPDATE events SET eval_project_id = ? WHERE user_id = ? AND id = ?');
+  const deleteEvent = db.prepare('DELETE FROM events WHERE user_id = ? AND id = ?');
+  const insertProject = db.prepare(
+    `INSERT INTO eval_projects (
+       id, user_id, name, level, role, stage, start_date, end_date,
+       status, settle, note, fee_manual, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '未结', ?, NULL, ?, ?)`
+  );
+  const getProject = db.prepare('SELECT * FROM eval_projects WHERE user_id = ? AND id = ?');
+
+  for (const ev of legacyRows) {
+    let meta = null;
+    try {
+      meta = ev.ledger_meta ? JSON.parse(ev.ledger_meta) : null;
+    } catch {
+      meta = null;
+    }
+    meta = meta || {};
+    const name = String(meta.projectName || ev.title || '').trim().slice(0, 120);
+    const start = ev.start_date;
+    if (!name || !EvalCore.isValidDateStr(start)) continue;
+    const end = EvalCore.isValidDateStr(ev.end_date) && ev.end_date > start ? ev.end_date : start;
+
+    const level = parseLegacyLevel(meta.level);
+    const role = parseLegacyRole(meta.role);
+    const stage = parseLegacyStage(meta.stage);
+    const unresolved = [];
+    if (!level) unresolved.push('等级');
+    if (!role) unresolved.push('角色');
+    if (!stage) unresolved.push('阶段');
+    const finalStage = stage || '预评估';
+
+    const existingProject = findProject.get(userId, name, finalStage, start);
+    if (existingProject) {
+      if (findLinkedEvent.get(userId, existingProject.id)) {
+        deleteEvent.run(userId, ev.id);
+        result.removedDuplicates++;
+      } else {
+        linkEvent.run(existingProject.id, userId, ev.id);
+        syncProjectToCalendarEvent(db, userId, rowToEvalProject(existingProject));
+        result.linked++;
+      }
+      continue;
+    }
+
+    const noteParts = [];
+    const userNote = extractLegacyUserNote(ev.notes);
+    if (userNote) noteParts.push(userNote);
+    if (unresolved.length) {
+      noteParts.push(`（由旧版台账日程自动迁移，请核对：${unresolved.join('、')}）`);
+    }
+    const pid = generateId('p');
+    const now = new Date().toISOString();
+    insertProject.run(
+      pid,
+      userId,
+      name,
+      level || '二级',
+      role || '组员',
+      finalStage,
+      start,
+      end,
+      inferLegacyStatus(start, end, today),
+      noteParts.join(' ').slice(0, 1000),
+      now,
+      now
+    );
+    linkEvent.run(pid, userId, ev.id);
+    syncProjectToCalendarEvent(db, userId, rowToEvalProject(getProject.get(userId, pid)));
+    result.migrated++;
+  }
+  return result;
+}
+
+/**
  * 项目状态自动推进（§4.6 / AC-07）：待开始且开始时间 <= 今天，单向改为进行中
  */
 function autoPromoteEvalProjects(db, userId, todayStr) {
@@ -683,6 +872,8 @@ module.exports = {
   listEvalTravelsForUser,
   syncProjectToCalendarEvent,
   deleteCalendarEventForProject,
+  applyEventDatesToProject,
+  migrateLegacyLedgerEvents,
   autoPromoteEvalProjects,
   buildEvalStateResponse,
   getAllHolidaysPayload,

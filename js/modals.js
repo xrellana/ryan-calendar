@@ -493,6 +493,27 @@
       var assessId = WorkCal.Config.protectedAssessmentCategoryId || 'cat-assessment';
 
       // 编辑已关联评估项目的「外出评估」日程时，直接切换至完整评估项目编辑弹窗（双向同步）
+      // 本地评估数据可能落后于日程（例如其他设备刚新增项目），先刷新一次再决定，避免退回普通日程表单
+      if (
+        editing &&
+        editing.evalProjectId &&
+        evalStore &&
+        !evalStore.getProjectById(editing.evalProjectId) &&
+        !currentPayload.evalReloaded
+      ) {
+        currentPayload.evalReloaded = true;
+        var payloadRef = currentPayload;
+        dialog.innerHTML = '<div class="modal-body">正在加载评估项目…</div>';
+        Promise.resolve()
+          .then(function () {
+            return evalStore.loadFromServer();
+          })
+          .catch(function () {})
+          .then(function () {
+            if (currentType === 'event-editor' && currentPayload === payloadRef) renderCurrent();
+          });
+        return;
+      }
       if (editing && editing.evalProjectId && evalStore && evalStore.getProjectById(editing.evalProjectId)) {
         currentType = 'eval-project-editor';
         currentPayload = {
@@ -761,7 +782,12 @@
       var editingId = currentPayload.eventId;
       runBusy(btn, function () {
         if (editingId && !keepOpenForNext) {
-          return store.updateEvent(editingId, data).then(function () {
+          return store.updateEvent(editingId, data).then(function (updatedEvt) {
+            // 关联日程改日期时服务端已回写项目，同步刷新本地评估数据
+            if (evalStore && updatedEvt && updatedEvt.evalProjectId) {
+              return evalStore.loadFromServer().catch(function () {});
+            }
+          }).then(function () {
             showToast('日程已更新', 'success');
             onDataChanged();
             isBusy = false;

@@ -5,6 +5,8 @@ const { generateId } = require('../auth');
 const {
   withTransaction,
   ensureProtectedAssessmentCategory,
+  applyEventDatesToProject,
+  migrateLegacyLedgerEvents,
   listCategoriesForUser,
   listEventsForUser,
   rowToEvent,
@@ -311,8 +313,34 @@ function createCalendarRouter(db, authMw) {
       return res.status(400).json({ error: err.message });
     }
 
-    if (existing.eval_project_id && data.categoryId !== PROTECTED_ASSESSMENT_CAT_ID) {
-      return res.status(400).json({ error: '评估项目关联日程不可更改类别' });
+    if (existing.eval_project_id) {
+      if (data.categoryId !== PROTECTED_ASSESSMENT_CAT_ID) {
+        return res.status(400).json({ error: '评估项目关联日程不可更改类别' });
+      }
+      // 标题、备注、时段由评估项目生成，日历侧只允许改日期并回写到项目，避免两边数据不一致
+      if (
+        data.title !== existing.title ||
+        data.notes !== (existing.notes || '') ||
+        data.allDay !== 1
+      ) {
+        return res.status(400).json({
+          error: '评估项目关联日程的标题、备注与时段请在评估项目中修改'
+        });
+      }
+      let syncedEvent = null;
+      withTransaction(db, () => {
+        syncedEvent = applyEventDatesToProject(
+          db,
+          req.user.id,
+          existing.eval_project_id,
+          data.startDate,
+          data.endDate
+        );
+      });
+      if (syncedEvent) {
+        return res.json({ event: syncedEvent, evalProjectUpdated: true });
+      }
+      // 关联的项目已不存在（历史脏数据）时，按普通日程处理
     }
 
     const now = new Date().toISOString();
@@ -398,12 +426,15 @@ function createCalendarRouter(db, authMw) {
 
     try {
       withTransaction(db, () => {
+        // 已迁移为评估项目的旧台账日程保留 ledger_key，同样参与匹配；项目页新建的日程 ledger_key 为空，不会被覆盖
         const existingRows = db
-          .prepare("SELECT id, ledger_key FROM events WHERE user_id = ? AND source = 'ledger' AND ledger_key != '' AND eval_project_id = ''")
+          .prepare("SELECT id, ledger_key, eval_project_id FROM events WHERE user_id = ? AND source = 'ledger' AND ledger_key != ''")
           .all(req.user.id);
         const keyToId = new Map();
+        const keyToEvalProjectId = new Map();
         for (const r of existingRows) {
           keyToId.set(r.ledger_key, r.id);
+          if (r.eval_project_id) keyToEvalProjectId.set(r.ledger_key, r.eval_project_id);
         }
 
         const updateStmt = db.prepare(
@@ -433,7 +464,12 @@ function createCalendarRouter(db, authMw) {
           });
 
           const existingId = data.ledgerKey ? keyToId.get(data.ledgerKey) : null;
-          if (existingId) {
+          const linkedProjectId = data.ledgerKey ? keyToEvalProjectId.get(data.ledgerKey) : null;
+          if (existingId && linkedProjectId) {
+            // 已关联项目：只把日期回写到项目，标题与备注仍由项目生成
+            applyEventDatesToProject(db, req.user.id, linkedProjectId, data.startDate, data.endDate);
+            updated++;
+          } else if (existingId) {
             updateStmt.run(
               data.title,
               data.categoryId,
@@ -465,6 +501,8 @@ function createCalendarRouter(db, authMw) {
             added++;
           }
         }
+        // 旧接口仍可被调用：导入的外出评估日程立即转为评估项目，保证日历与项目列表一致
+        migrateLegacyLedgerEvents(db, req.user.id);
       });
     } catch (err) {
       return res.status(400).json({ error: err.message || '台账导入失败' });
@@ -594,6 +632,7 @@ function createCalendarRouter(db, authMw) {
 
     const now = new Date().toISOString();
     let importedEvents = 0;
+    let skippedEvalEvents = 0;
 
     try {
       withTransaction(db, () => {
@@ -649,6 +688,11 @@ function createCalendarRouter(db, authMw) {
           } catch {
             return;
           }
+          // 评估项目关联日程由评估数据生成，恢复日程备份时跳过，否则会变成与项目脱钩的重复普通日程
+          if (ev.evalProjectId) {
+            skippedEvalEvents++;
+            return;
+          }
           const eid = String(ev.id || generateId('evt')).slice(0, 80);
           if (existingEvtIds.has(eid)) return;
           const createdAt = typeof ev.createdAt === 'string' && ev.createdAt ? ev.createdAt : now;
@@ -674,6 +718,8 @@ function createCalendarRouter(db, authMw) {
           importedEvents++;
         });
         ensureProtectedAssessmentCategory(db, req.user.id);
+        // 旧版备份里的台账日程恢复后同样迁移为评估项目
+        migrateLegacyLedgerEvents(db, req.user.id);
       });
     } catch (err) {
       return res.status(400).json({ error: err.message || '恢复数据失败' });
@@ -683,6 +729,7 @@ function createCalendarRouter(db, authMw) {
     res.json({
       categories: state.categories.length,
       events: mode === 'merge' ? importedEvents : state.events.length,
+      skippedEvalEvents,
       state
     });
   });

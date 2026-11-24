@@ -424,3 +424,173 @@ test('Backend eval platform: strict user_id isolation, protected assessment cate
   assert.equal(restoreRes.json.travels, 1);
   assert.equal(restoreRes.json.calendarState.events.length, 2);
 });
+
+test('Legacy ledger migration, eval-aware backup restore, linked event date write-back, and same-name category takeover', async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ryan-eval-legacy-test-'));
+  const dbPath = path.join(tmpDir, 'calendar.db');
+  const backupDir = path.join(tmpDir, 'backups');
+
+  process.env.ADMIN_USERNAME = 'admin';
+  process.env.ADMIN_PASSWORD = 'AdminPassword123!';
+
+  const { app, db } = createApp({ dbPath, backupDir });
+  const server = await new Promise((resolve) => {
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
+  });
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  t.after(async () => {
+    await new Promise((resolve) => server.close(resolve));
+    db.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const admin = createClient(baseUrl);
+  const carol = createClient(baseUrl);
+  await admin.req('POST', '/api/auth/login', { username: 'admin', password: 'AdminPassword123!' });
+  await admin.req('POST', '/api/admin/users', {
+    username: 'carol',
+    displayName: 'Carol',
+    password: 'CarolPassword123',
+    role: 'user'
+  });
+  await carol.req('POST', '/api/auth/login', { username: 'carol', password: 'CarolPassword123' });
+  const carolId = db.prepare("SELECT id FROM users WHERE username = 'carol'").get().id;
+
+  // 1. Legacy ledger import: assessment-category rows become eval projects, other categories stay untouched
+  const legacyEntries = [
+    {
+      title: '旧台账项目A',
+      categoryId: 'cat-assessment',
+      startDate: '2020-10-01',
+      endDate: '2020-10-03',
+      notes: '阶段：正式评估 | 等级：3级 | 角色：组长 | 现场核验',
+      ledgerKey: '旧台账项目A||正式评估||2020-10-01||2020-10-03',
+      ledgerMeta: { projectName: '旧台账项目A', stage: '正式评估', level: '3级', role: '组长' }
+    },
+    {
+      title: '旧台账项目B',
+      categoryId: 'cat-assessment',
+      startDate: '2020-11-05',
+      endDate: '',
+      notes: '阶段：评估',
+      ledgerKey: '旧台账项目B||评估||2020-11-05||',
+      ledgerMeta: { projectName: '旧台账项目B', stage: '评估', level: '', role: '' }
+    },
+    {
+      title: '咨询台账C',
+      categoryId: 'cat-consulting',
+      startDate: '2020-12-01',
+      endDate: '',
+      notes: '',
+      ledgerKey: '咨询台账C||咨询||2020-12-01||',
+      ledgerMeta: { projectName: '咨询台账C', stage: '咨询', level: '', role: '' }
+    }
+  ];
+  const imp1 = await carol.req('POST', '/api/events/import-ledger', { entries: legacyEntries });
+  assert.equal(imp1.status, 200);
+
+  const evalState1 = (await carol.req('GET', '/api/eval/state')).json;
+  assert.equal(evalState1.projects.length, 2);
+  const projA = evalState1.projects.find((p) => p.name === '旧台账项目A');
+  assert.equal(projA.level, '三级');
+  assert.equal(projA.role, '组长');
+  assert.equal(projA.stage, '正式评估');
+  assert.equal(projA.end, '2020-10-03');
+  assert.equal(projA.status, '已完成');
+  assert.equal(projA.settle, '未结');
+  assert.equal(projA.note, '现场核验');
+  const projB = evalState1.projects.find((p) => p.name === '旧台账项目B');
+  assert.equal(projB.level, '二级');
+  assert.equal(projB.role, '组员');
+  assert.equal(projB.stage, '预评估');
+  assert.equal(projB.end, '2020-11-05');
+  assert.match(projB.note, /请核对：等级、角色、阶段/);
+
+  const calState1 = (await carol.req('GET', '/api/state')).json;
+  const assessEvents1 = calState1.events.filter((e) => e.categoryId === 'cat-assessment');
+  assert.equal(assessEvents1.length, 2);
+  assert.ok(assessEvents1.every((e) => e.evalProjectId));
+  const evA = assessEvents1.find((e) => e.evalProjectId === projA.id);
+  assert.equal(evA.title, '旧台账项目A（正式评估）');
+  const consultEvent = calState1.events.find((e) => e.categoryId === 'cat-consulting');
+  assert.equal(consultEvent.evalProjectId, '');
+
+  // 2. Re-importing the same legacy ledger must not create duplicate events or projects
+  const imp2 = await carol.req('POST', '/api/events/import-ledger', { entries: legacyEntries.slice(0, 2) });
+  assert.equal(imp2.status, 200);
+  assert.equal((await carol.req('GET', '/api/eval/state')).json.projects.length, 2);
+  assert.equal(
+    (await carol.req('GET', '/api/state')).json.events.filter((e) => e.categoryId === 'cat-assessment').length,
+    2
+  );
+
+  // 3. Startup-style migration over raw legacy rows is idempotent
+  const { withTransaction, migrateLegacyLedgerEvents } = require('../db');
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO events (id, user_id, title, category_id, start_date, end_date, all_day,
+       start_time, end_time, notes, source, ledger_key, ledger_meta, created_at, updated_at)
+     VALUES ('evt-raw-legacy', ?, '旧台账项目D', 'cat-assessment', '2099-01-10', '2099-01-12', 1,
+       '', '', '', 'ledger', 'k', ?, ?, ?)`
+  ).run(carolId, JSON.stringify({ projectName: '旧台账项目D', stage: '预评估', level: '一级', role: '组员' }), now, now);
+  const firstRun = withTransaction(db, () => migrateLegacyLedgerEvents(db, carolId, '2026-11-24'));
+  assert.equal(firstRun.migrated, 1);
+  const secondRun = withTransaction(db, () => migrateLegacyLedgerEvents(db, carolId, '2026-11-24'));
+  assert.equal(secondRun.migrated + secondRun.linked + secondRun.removedDuplicates, 0);
+  const projD = db.prepare("SELECT * FROM eval_projects WHERE user_id = ? AND name = '旧台账项目D'").get(carolId);
+  assert.equal(projD.status, '待开始');
+
+  // 4. Calendar backup restore skips eval-linked events instead of resurrecting them as plain events
+  const backupEvents = calState1.events.map((e) => Object.assign({}, e, { id: e.id + '-old' }));
+  const restore = await carol.req('POST', '/api/backup/restore', {
+    mode: 'merge',
+    categories: calState1.categories,
+    events: backupEvents
+  });
+  assert.equal(restore.status, 200);
+  assert.equal(restore.json.skippedEvalEvents, 2);
+  assert.equal(
+    restore.json.state.events.filter((e) => e.categoryId === 'cat-assessment' && !e.evalProjectId).length,
+    0
+  );
+
+  // 5. Editing a linked event in the calendar writes dates back to the project; title edits are rejected
+  const moved = await carol.req('PATCH', `/api/events/${evA.id}`, {
+    startDate: '2020-10-05',
+    endDate: '2020-10-08'
+  });
+  assert.equal(moved.status, 200);
+  assert.equal(moved.json.evalProjectUpdated, true);
+  assert.equal(moved.json.event.startDate, '2020-10-05');
+  const projAAfter = (await carol.req('GET', '/api/eval/state')).json.projects.find((p) => p.id === projA.id);
+  assert.equal(projAAfter.start, '2020-10-05');
+  assert.equal(projAAfter.end, '2020-10-08');
+
+  const singleDay = await carol.req('PATCH', `/api/events/${evA.id}`, { startDate: '2020-10-06', endDate: '' });
+  assert.equal(singleDay.status, 200);
+  const projASingle = (await carol.req('GET', '/api/eval/state')).json.projects.find((p) => p.id === projA.id);
+  assert.equal(projASingle.end, '2020-10-06');
+
+  const retitle = await carol.req('PATCH', `/api/events/${evA.id}`, { title: '随便改个标题' });
+  assert.equal(retitle.status, 400);
+
+  // 6. A user-made category with the protected name is adopted instead of duplicated
+  db.prepare("DELETE FROM categories WHERE user_id = ? AND id = 'cat-assessment'").run(carolId);
+  const ownCat = await carol.req('POST', '/api/categories', { name: '外出评估', color: '#123456' });
+  assert.equal(ownCat.status, 201);
+  const ownCatId = ownCat.json.category.id;
+  const plainEvt = await carol.req('POST', '/api/events', {
+    title: '自建类别下的日程',
+    categoryId: ownCatId,
+    startDate: '2026-12-20',
+    allDay: true
+  });
+  assert.equal(plainEvt.status, 201);
+  const calState2 = (await carol.req('GET', '/api/state')).json;
+  const sameNamed = calState2.categories.filter((c) => c.name === '外出评估');
+  assert.equal(sameNamed.length, 1);
+  assert.equal(sameNamed[0].id, 'cat-assessment');
+  assert.equal(sameNamed[0].color, '#123456');
+  assert.equal(calState2.events.find((e) => e.id === plainEvt.json.event.id).categoryId, 'cat-assessment');
+});
