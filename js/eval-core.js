@@ -465,6 +465,54 @@
   }
 
   /**
+   * 差旅排序：日期按 dir 排序（默认倒序）；同一天内固定按手动顺序 sortOrder 从早到晚，
+   * 不随日期方向翻转。sortOrder 相同时（例如并发写入）再按项目名称、录入时间兜底，保证顺序稳定
+   */
+  function compareTravels(a, b, dir) {
+    var dirMul = dir === 'asc' ? 1 : -1;
+    var da = String((a && a.date) || '');
+    var db = String((b && b.date) || '');
+    if (da !== db) return dirMul * da.localeCompare(db);
+    var sa = Number(a && a.sortOrder) || 0;
+    var sb = Number(b && b.sortOrder) || 0;
+    if (sa !== sb) return sa - sb;
+    var byName = String((a && a.name) || '').localeCompare(String((b && b.name) || ''), 'zh-CN');
+    if (byName !== 0) return byName;
+    return String((a && a.createdAt) || '').localeCompare(String((b && b.createdAt) || ''));
+  }
+
+  /**
+   * 计算同一天内移动一笔差旅后的完整顺序（返回该日期下全部差旅 id）
+   * - anchorId 是页面上相邻的那一笔；筛选隐藏的记录也参与重排，但彼此相对顺序不变
+   * - placeAfter=false 表示放到 anchor 之前（上移），true 表示放到 anchor 之后（下移）
+   * - 两笔不在同一天或找不到时返回 null
+   */
+  function buildTravelDayOrder(travels, movingId, anchorId, placeAfter) {
+    var list = Array.isArray(travels) ? travels : [];
+    var moving = null;
+    var anchor = null;
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].id === movingId) moving = list[i];
+      if (list[i].id === anchorId) anchor = list[i];
+    }
+    if (!moving || !anchor || moving === anchor || moving.date !== anchor.date) return null;
+
+    var rest = list
+      .filter(function (t) {
+        return t.date === moving.date && t.id !== movingId;
+      })
+      .sort(function (a, b) {
+        return compareTravels(a, b, 'asc');
+      });
+    var ids = rest.map(function (t) {
+      return t.id;
+    });
+    var anchorIdx = ids.indexOf(anchorId);
+    ids.splice(placeAfter ? anchorIdx + 1 : anchorIdx, 0, movingId);
+    return { date: moving.date, ids: ids };
+  }
+
+  /**
    * 联动工作日程：标题与备注拼装（已确认口径：标题保留“预评估/正式评估”）
    */
   function formatEventTitleForProject(name, stage) {
@@ -627,6 +675,8 @@
     getTravelDisplayCat: getTravelDisplayCat,
     projectDedupKey: projectDedupKey,
     travelDedupKey: travelDedupKey,
+    compareTravels: compareTravels,
+    buildTravelDayOrder: buildTravelDayOrder,
     formatEventTitleForProject: formatEventTitleForProject,
     buildProjectEventNotes: buildProjectEventNotes,
     buildSampleProjects: buildSampleProjects,

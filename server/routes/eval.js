@@ -8,6 +8,7 @@ const {
   getEvalSettingsForUser,
   rowToEvalProject,
   rowToEvalTravel,
+  getNextTravelSortOrder,
   syncProjectToCalendarEvent,
   deleteCalendarEventForProject,
   buildEvalStateResponse,
@@ -604,8 +605,8 @@ function createEvalRouter(db, authMw) {
     db.prepare(
       `INSERT INTO eval_travels (
          id, user_id, date, name, stage, level, plan_start, plan_end, plan_text,
-         cat, cat_custom, amount, detail, reimb, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         cat, cat_custom, amount, detail, reimb, sort_order, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id,
       userId,
@@ -621,6 +622,7 @@ function createEvalRouter(db, authMw) {
       data.amount,
       data.detail,
       data.reimb,
+      getNextTravelSortOrder(db, userId, data.date),
       now,
       now
     );
@@ -654,10 +656,13 @@ function createEvalRouter(db, authMw) {
     }
 
     const now = new Date().toISOString();
+    // 改到其他日期时排到新日期的最后；日期不变则保留原有的同日顺序
+    const sortOrder =
+      data.date === existing.date ? existing.sort_order : getNextTravelSortOrder(db, userId, data.date);
     db.prepare(
       `UPDATE eval_travels
        SET date = ?, name = ?, stage = ?, level = ?, plan_start = ?, plan_end = ?, plan_text = ?,
-           cat = ?, cat_custom = ?, amount = ?, detail = ?, reimb = ?, updated_at = ?
+           cat = ?, cat_custom = ?, amount = ?, detail = ?, reimb = ?, sort_order = ?, updated_at = ?
        WHERE user_id = ? AND id = ?`
     ).run(
       data.date,
@@ -672,6 +677,7 @@ function createEvalRouter(db, authMw) {
       data.amount,
       data.detail,
       data.reimb,
+      sortOrder,
       now,
       userId,
       tid
@@ -712,6 +718,51 @@ function createEvalRouter(db, authMw) {
 
     res.json({
       updatedCount,
+      evalState: buildEvalStateResponse(db, userId, getTodayParam(req))
+    });
+  });
+
+  // 同一天内手动调整差旅先后：ids 为该日期下按新顺序排好的差旅 id
+  // 请求里没列出的同日记录（例如客户端数据稍旧）保持原相对顺序排在后面，而不是直接报错
+  router.post('/travels/reorder', (req, res) => {
+    const userId = req.user.id;
+    const body = req.body || {};
+    const date = String(body.date || '').trim();
+    if (!EvalCore.isValidDateStr(date)) {
+      return res.status(400).json({ error: '差旅日期无效' });
+    }
+    const ids = Array.isArray(body.ids) ? body.ids.map(String).filter(Boolean) : [];
+    if (!ids.length) {
+      return res.status(400).json({ error: '请提供要排序的差旅记录' });
+    }
+    if (new Set(ids).size !== ids.length) {
+      return res.status(400).json({ error: '差旅记录重复' });
+    }
+
+    const dayRows = db
+      .prepare(
+        `SELECT id FROM eval_travels
+         WHERE user_id = ? AND date = ?
+         ORDER BY sort_order ASC, name ASC, created_at ASC`
+      )
+      .all(userId, date);
+    const dayIds = new Set(dayRows.map((r) => r.id));
+    if (ids.some((id) => !dayIds.has(id))) {
+      return res.status(409).json({ error: '差旅记录已变化，请刷新后重试' });
+    }
+    const listed = new Set(ids);
+    const finalOrder = ids.concat(dayRows.map((r) => r.id).filter((id) => !listed.has(id)));
+
+    const now = new Date().toISOString();
+    withTransaction(db, () => {
+      const upd = db.prepare(
+        'UPDATE eval_travels SET sort_order = ?, updated_at = ? WHERE user_id = ? AND id = ?'
+      );
+      finalOrder.forEach((id, idx) => upd.run(idx + 1, now, userId, id));
+    });
+
+    res.json({
+      ok: true,
       evalState: buildEvalStateResponse(db, userId, getTodayParam(req))
     });
   });
@@ -775,9 +826,18 @@ function createEvalRouter(db, authMw) {
         const insertStmt = db.prepare(
           `INSERT INTO eval_travels (
              id, user_id, date, name, stage, level, plan_start, plan_end, plan_text,
-             cat, cat_custom, amount, detail, reimb, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             cat, cat_custom, amount, detail, reimb, sort_order, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         );
+        // 导入的记录按文件中的先后追加到各自日期的最后
+        const nextOrderByDate = new Map();
+        const takeSortOrder = (date) => {
+          const next = nextOrderByDate.has(date)
+            ? nextOrderByDate.get(date)
+            : getNextTravelSortOrder(db, userId, date);
+          nextOrderByDate.set(date, next + 1);
+          return next;
+        };
 
         for (const raw of items) {
           const data = normalizeTravelPayload(raw || {}, { allowEmptyDetail: true });
@@ -803,6 +863,7 @@ function createEvalRouter(db, authMw) {
             data.amount,
             data.detail,
             data.reimb,
+            takeSortOrder(data.date),
             now,
             now
           );
@@ -952,9 +1013,18 @@ function createEvalRouter(db, authMw) {
         const insTrv = db.prepare(
           `INSERT INTO eval_travels (
              id, user_id, date, name, stage, level, plan_start, plan_end, plan_text,
-             cat, cat_custom, amount, detail, reimb, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             cat, cat_custom, amount, detail, reimb, sort_order, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         );
+        // 备份里带 sortOrder 时原样恢复；旧版备份没有该字段，按文件中的先后排在当天最后
+        const maxOrderByDate = new Map();
+        const restoreSortOrder = (date, raw) => {
+          const n = Number(raw);
+          const cur = maxOrderByDate.get(date) || 0;
+          const next = Number.isInteger(n) && n > 0 ? n : cur + 1;
+          maxOrderByDate.set(date, Math.max(cur, next));
+          return next;
+        };
         const seenTrvIds = new Set();
         for (const rt of rawTravels) {
           if (!rt || !rt.name || !rt.date) continue;
@@ -984,6 +1054,7 @@ function createEvalRouter(db, authMw) {
             d.amount,
             d.detail,
             d.reimb,
+            restoreSortOrder(d.date, rt.sortOrder),
             createdAt,
             updatedAt
           );

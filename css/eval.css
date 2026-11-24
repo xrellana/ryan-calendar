@@ -724,6 +724,51 @@
   color: var(--danger);
 }
 
+/* 差旅同日上移/下移：平时淡显，悬停行或键盘聚焦时再突出，避免抢日期列的视线 */
+.eval-t-move {
+  display: inline-flex;
+  gap: 1px;
+  margin-left: 6px;
+  vertical-align: middle;
+  opacity: 0.35;
+  transition: opacity 0.15s ease;
+}
+
+.eval-table tbody tr:hover .eval-t-move,
+.eval-t-move:focus-within {
+  opacity: 1;
+}
+
+/* 触屏设备没有悬停，直接常亮 */
+@media (hover: none) {
+  .eval-t-move {
+    opacity: 1;
+  }
+}
+
+.eval-t-move-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--accent-primary);
+  cursor: pointer;
+}
+
+.eval-t-move-btn:hover:not(:disabled) {
+  background: #dbeafe;
+}
+
+.eval-t-move-btn:disabled {
+  color: var(--border-strong);
+  cursor: default;
+}
+
 /* 分段控件（近期评估窗口 / 统计维度切换） */
 .eval-segmented {
   display: inline-flex;
@@ -1020,6 +1065,7 @@
   .eval-meta-right,
   .eval-card.is-filter-card,
   .eval-batch-bar,
+  .eval-t-move,
   .eval-col-check,
   .eval-col-action {
     display: none !important;

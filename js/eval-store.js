@@ -286,6 +286,13 @@
       });
     }
 
+    function reorderTravels(date, ids) {
+      return api.evalReorderTravels(date, ids).then(function (res) {
+        if (res && res.evalState) applyServerPayload(res.evalState);
+        return res;
+      });
+    }
+
     function deleteTravel(id) {
       return api.evalDeleteTravel(id).then(function (res) {
         delete selectedTravelIds[id];
@@ -392,6 +399,7 @@
       createTravel: createTravel,
       updateTravel: updateTravel,
       batchUpdateTravels: batchUpdateTravels,
+      reorderTravels: reorderTravels,
       deleteTravel: deleteTravel,
       importTravels: importTravels,
       saveSettings: saveSettings,

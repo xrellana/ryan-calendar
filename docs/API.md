@@ -197,6 +197,7 @@ val okHttpClient = OkHttpClient.Builder()
   "amount": 326.5,
   "detail": "T2航站楼停车三天",
   "reimb": "未报",
+  "sortOrder": 2,
   "createdAt": "2026-11-24T01:00:00.000Z",
   "updatedAt": "2026-11-24T01:00:00.000Z"
 }
@@ -205,6 +206,8 @@ val okHttpClient = OkHttpClient.Builder()
 - `cat`: `"打车"` | `"高铁"` | `"飞机"` | `"自驾"` | `"住宿"` | `"餐饮"` | `"自定义"`（选 `"自定义"` 时 `catCustom` 必填）
   - 传入不在列表中的非空值时，服务端会自动改为 `"自定义"`，并把原值（截断至 40 字）写入 `catCustom`；传空则默认为 `"打车"`。
 - `reimb`: `"未报"` | `"已报"` | `"已结"`
+
+**`sortOrder`**：同一 `date` 内的手动顺序（从 1 开始，越小越早），只读字段，`POST`/`PATCH` 传入会被忽略，只能通过 `POST /api/eval/travels/reorder` 调整。新增、导入或把记录改到其他日期时，服务端自动把它排在该日期最后。`GET /api/eval/state` 返回的 `travels` 已按 `date` 倒序、`sortOrder` 升序排好。
 
 ### 2.6 EvalSettings（基础规则设置）
 ```json
@@ -481,6 +484,7 @@ val okHttpClient = OkHttpClient.Builder()
 | `POST` | `/api/eval/travels` | `{ date, name, stage, level?, planStart?, planEnd?, planText?, cat, catCustom?, amount, detail, reimb }` | `201 { "travel", "evalState" }` | `amount > 0`（自动保留 2 位小数）；`detail` 必填；`cat=="自定义"` 时 `catCustom` 必填 |
 | `PATCH` | `/api/eval/travels/:id` | 任意待更新字段（行内改报销状态仅传 `{ "reimb": "已报" }`） | `200 { "travel", "evalState" }` | — |
 | `POST` | `/api/eval/travels/batch` | `{ "ids": ["t-1", "t-2"], "reimb": "已结" }` | `200 { "updatedCount", "evalState" }` | — |
+| `POST` | `/api/eval/travels/reorder` | `{ "date": "2026-11-23", "ids": ["t-3", "t-1", "t-2"] }` | `200 { "ok": true, "evalState" }` | 调整同一天内的先后顺序，`ids` 按新顺序排列；未列出的同日记录保持原相对顺序排在后面。`date` 无效或 `ids` 为空/重复 → `400`；`ids` 中有不属于当前用户或不在该日期的记录 → `409`（客户端应刷新后重试） |
 | `DELETE` | `/api/eval/travels/:id` | — | `200 { "ok": true, "evalState" }` | — |
 | `POST` | `/api/eval/travels/import` | `{ "mode": "append" \| "replace", "items": [...] }` | `200 { "imported", "skippedDup", "mode", "evalState" }` | **仅 Web 端**（Excel 导入），Android 端不接入；按 6 字段签名去重，上限 5000 笔，导入允许 `detail` 为空 |
 
@@ -544,3 +548,6 @@ val okHttpClient = OkHttpClient.Builder()
    - 未结项目数：该名称下任一记录 `settle == "未结"` 即计入；费率待设置项目数同理。
 8. **差旅联动规则**：
    - 选择已有项目名后，按 `|travel.date - project.start|` 距离自动选中最近阶段，并带出该阶段的 `level` 与评估计划区间；允许输入未登记的新项目名称。
+9. **差旅排序口径**：
+   - 先按 `date` 排序（Web 端默认倒序，可切换升序）；同一天内始终按 `sortOrder` 从早到晚，不随日期方向翻转；`sortOrder` 相同时再按项目名称、`createdAt` 兜底。
+   - Web 端在同一天有 2 笔及以上时，在日期旁显示上移/下移按钮；合并显示时只在同一项目组的同日记录之间移动。被筛选隐藏的同日记录也参与重排，但彼此相对顺序不变。

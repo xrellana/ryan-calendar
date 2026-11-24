@@ -216,6 +216,9 @@
     evalBatchTravels: function (ids, reimb) {
       return request('POST', '/api/eval/travels/batch', { ids: ids, reimb: reimb });
     },
+    evalReorderTravels: function (date, ids) {
+      return request('POST', '/api/eval/travels/reorder', { date: date, ids: ids });
+    },
     evalDeleteTravel: function (id) {
       return request('DELETE', '/api/eval/travels/' + encodeURIComponent(id));
     },
