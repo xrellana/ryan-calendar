@@ -170,6 +170,10 @@
   grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
+.eval-kpi-grid.cols-4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .eval-kpi-card {
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
@@ -987,6 +991,10 @@
   .eval-kpi-grid.cols-5 {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
+  /* 4 张卡按 3 列排会剩 1 张孤立，改成 2x2 */
+  .eval-kpi-grid.cols-4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .eval-settings-grid {
     grid-template-columns: 1fr;
   }
@@ -994,7 +1002,8 @@
 
 @media (max-width: 680px) {
   .eval-kpi-grid,
-  .eval-kpi-grid.cols-5 {
+  .eval-kpi-grid.cols-5,
+  .eval-kpi-grid.cols-4 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .eval-form-grid-3 {

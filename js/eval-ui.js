@@ -1672,8 +1672,7 @@
           rep: rep,
           repCnt: repCnt,
           done: done,
-          doneCnt: doneCnt,
-          avg: list.length > 0 ? Core.round2(total / list.length) : 0
+          doneCnt: doneCnt
         };
       };
 
@@ -1940,7 +1939,7 @@
         '<button type="button" class="btn btn-primary btn-sm" data-eval-action="new-travel">+ 新建差旅</button>' +
         '</div>' +
         '</div>' +
-        '<div class="eval-kpi-grid cols-5' +
+        '<div class="eval-kpi-grid cols-4' +
         (hasSel ? ' is-selected-scope' : '') +
         '">' +
         '<div class="eval-kpi-card"><div class="eval-kpi-label">差旅总额</div><div class="eval-kpi-value">¥' +
@@ -1967,11 +1966,6 @@
         '</div><div class="eval-kpi-sub">' +
         stats.doneCnt +
         ' 笔已结算</div></div>' +
-        '<div class="eval-kpi-card"><div class="eval-kpi-label">单笔平均</div><div class="eval-kpi-value">¥' +
-        esc(Core.formatMoney(stats.avg)) +
-        '</div><div class="eval-kpi-sub">' +
-        (hasSel ? '所选 ' + stats.count + ' 笔平均' : '当前筛选结果') +
-        '</div></div>' +
         '</div>' +
         '<div class="eval-card is-filter-card">' +
         '<div class="eval-filter-controls">' +
