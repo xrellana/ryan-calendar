@@ -62,6 +62,7 @@
       pFilter: {
         query: '',
         levels: [],
+        roles: [],
         stages: [],
         statuses: [],
         settles: [],
@@ -240,6 +241,7 @@
     function getMultiSelectBinding(key) {
       var map = {
         p_level: { arr: ui.pFilter.levels, opts: Core.LEVELS },
+        p_role: { arr: ui.pFilter.roles, opts: Core.ROLES },
         p_stage: { arr: ui.pFilter.stages, opts: Core.STAGES },
         p_status: { arr: ui.pFilter.statuses, opts: Core.PROJECT_STATUSES },
         p_settle: { arr: ui.pFilter.settles, opts: Core.SETTLE_STATUSES },
@@ -287,6 +289,7 @@
           if (hay.indexOf(q) === -1) return false;
         }
         if (f.levels.length && f.levels.indexOf(p.level) === -1) return false;
+        if (f.roles.length && f.roles.indexOf(p.role) === -1) return false;
         if (f.stages.length && f.stages.indexOf(p.stage) === -1) return false;
         if (f.statuses.length && f.statuses.indexOf(p.status) === -1) return false;
         if (f.settles.length && f.settles.indexOf(p.settle) === -1) return false;
@@ -577,6 +580,13 @@
             var grpChecked = selInGrp === fullIds.length && fullIds.length > 0;
             var grpPartial = selInGrp > 0 && selInGrp < fullIds.length;
             var rowSpan = grp.records.length;
+            // 同名项目的等级、角色正常不会变化；仅当组内完全一致时才合并，避免数据不一致时被隐藏
+            var sameLevel = grp.records.every(function (r) {
+              return r.level === grp.records[0].level;
+            });
+            var sameRole = grp.records.every(function (r) {
+              return r.role === grp.records[0].role;
+            });
 
             grp.records.forEach(function (rec, rIdx) {
               var eff = Core.calcEffectiveFee(rec, settings);
@@ -633,13 +643,18 @@
                   '</td>';
               }
 
+              if (!sameLevel) {
+                tbodyHtml += '<td>' + esc(rec.level) + '</td>';
+              } else if (rIdx === 0) {
+                tbodyHtml += '<td rowspan="' + rowSpan + '">' + esc(rec.level) + '</td>';
+              }
+              if (!sameRole) {
+                tbodyHtml += '<td>' + esc(rec.role) + '</td>';
+              } else if (rIdx === 0) {
+                tbodyHtml += '<td rowspan="' + rowSpan + '">' + esc(rec.role) + '</td>';
+              }
+
               tbodyHtml +=
-                '<td>' +
-                esc(rec.level) +
-                '</td>' +
-                '<td>' +
-                esc(rec.role) +
-                '</td>' +
                 '<td>' +
                 esc(rec.stage) +
                 '</td>' +
@@ -915,7 +930,11 @@
         '<div class="eval-meta-right">' +
         '<button type="button" class="btn btn-outline btn-sm" data-eval-action="refresh">刷新</button>' +
         '<button type="button" class="btn btn-outline btn-sm" data-eval-action="import-projects">导入 Excel</button>' +
-        '<button type="button" class="btn btn-outline btn-sm" data-eval-action="export-projects">导出 Excel</button>' +
+        '<button type="button" class="btn btn-outline btn-sm" data-eval-action="export-projects" title="' +
+        (hasSelection ? '仅导出已勾选的记录' : '导出当前筛选结果（未筛选即全部）') +
+        '">' +
+        (hasSelection ? '导出所选（' + selectedRecords.length + ' 条）' : '导出 Excel') +
+        '</button>' +
         '</div>' +
         '</div>' +
         '<div class="eval-kpi-grid' +
@@ -951,6 +970,7 @@
         esc(ui.pFilter.query) +
         '">' +
         renderMultiSelect('p_level', '等级', Core.LEVELS, ui.pFilter.levels) +
+        renderMultiSelect('p_role', '角色', Core.ROLES, ui.pFilter.roles) +
         renderMultiSelect('p_stage', '阶段', Core.STAGES, ui.pFilter.stages) +
         renderMultiSelect('p_status', '项目状态', Core.PROJECT_STATUSES, ui.pFilter.statuses) +
         renderMultiSelect('p_settle', '费用状态', Core.SETTLE_STATUSES, ui.pFilter.settles) +
@@ -1016,19 +1036,22 @@
       var totalFee = 0;
       var settledFee = 0;
       var unsettledFee = 0;
-      var unsettledCount = 0;
-      var pendingCount = 0;
+      // 项目数按项目名称去重：同一项目的预评估与正式评估只算一个项目
+      var projectNames = {};
+      var unsettledNames = {};
+      var pendingNames = {};
       var monthMap = {};
       var groupMap = {};
 
       list.forEach(function (p) {
         var eff = Core.calcEffectiveFee(p, settings);
         totalDays += eff.days;
-        if (p.settle === '未结') unsettledCount++;
+        projectNames[p.name] = true;
+        if (p.settle === '未结') unsettledNames[p.name] = true;
 
         var feeVal = eff.pendingRate ? 0 : eff.fee || 0;
         if (eff.pendingRate) {
-          pendingCount++;
+          pendingNames[p.name] = true;
         } else {
           totalFee = Core.round2(totalFee + feeVal);
           if (p.settle === '已结') settledFee = Core.round2(settledFee + feeVal);
@@ -1053,9 +1076,12 @@
         else gKey = p.stage;
 
         if (!groupMap[gKey]) {
-          groupMap[gKey] = { key: gKey, count: 0, days: 0, fee: 0, settled: 0, unsettled: 0 };
+          groupMap[gKey] = { key: gKey, names: {}, count: 0, days: 0, fee: 0, settled: 0, unsettled: 0 };
         }
-        groupMap[gKey].count++;
+        if (!groupMap[gKey].names[p.name]) {
+          groupMap[gKey].names[p.name] = true;
+          groupMap[gKey].count++;
+        }
         groupMap[gKey].days += eff.days;
         if (!eff.pendingRate) {
           groupMap[gKey].fee = Core.round2(groupMap[gKey].fee + feeVal);
@@ -1063,6 +1089,10 @@
           else groupMap[gKey].unsettled = Core.round2(groupMap[gKey].unsettled + feeVal);
         }
       });
+
+      var projectCount = Object.keys(projectNames).length;
+      var unsettledCount = Object.keys(unsettledNames).length;
+      var pendingCount = Object.keys(pendingNames).length;
 
       var settledPct = totalFee > 0 ? ((settledFee / totalFee) * 100).toFixed(1) : '0.0';
       var unsettledPct = totalFee > 0 ? ((unsettledFee / totalFee) * 100).toFixed(1) : '0.0';
@@ -1165,8 +1195,10 @@
         '</div>' +
         '<div class="eval-kpi-grid">' +
         '<div class="eval-kpi-card"><div class="eval-kpi-label">项目数</div><div class="eval-kpi-value">' +
+        projectCount +
+        '</div><div class="eval-kpi-sub">按项目名称计 · ' +
         list.length +
-        '</div><div class="eval-kpi-sub">当前统计范围</div></div>' +
+        ' 条记录</div></div>' +
         '<div class="eval-kpi-card"><div class="eval-kpi-label">评估天数</div><div class="eval-kpi-value">' +
         totalDays +
         ' 天</div><div class="eval-kpi-sub">—</div></div>' +
@@ -1187,7 +1219,7 @@
         '%</div></div>' +
         '<div class="eval-kpi-card"><div class="eval-kpi-label">未结项目数</div><div class="eval-kpi-value is-orange">' +
         unsettledCount +
-        '</div><div class="eval-kpi-sub">费用待结算记录</div></div>' +
+        '</div><div class="eval-kpi-sub">含未结阶段的项目</div></div>' +
         '</div>' +
         '<div class="eval-card">' +
         '<div class="eval-card-head"><h3 class="eval-card-title">月度评估费用分布<span class="eval-card-sub">按项目开始时间归属月份</span></h3></div>' +
@@ -1263,8 +1295,9 @@
 
       var win = getDaysWindowRange();
 
-      var todayInEval = 0;
-      var winInEval = 0;
+      // 在评估项目数按项目名称去重
+      var todayNames = {};
+      var winNames = {};
       var elapsedTotal = 0;
       var thisMonthDays = 0;
       var futurePlanDays = 0;
@@ -1282,7 +1315,7 @@
         var days = Core.calcDays(p.start, effEnd);
         allPlanDays += days;
 
-        if (p.start <= td && effEnd >= td) todayInEval++;
+        if (p.start <= td && effEnd >= td) todayNames[p.name] = true;
 
         var elapsed = 0;
         if (p.start <= td) {
@@ -1307,7 +1340,7 @@
         progressRows.push(rowObj);
 
         if (Core.projectIntersectsRange(p, win.start, win.end)) {
-          winInEval++;
+          winNames[p.name] = true;
           recentRows.push(rowObj);
         }
 
@@ -1346,6 +1379,9 @@
           }
         }
       });
+
+      var todayInEval = Object.keys(todayNames).length;
+      var winInEval = Object.keys(winNames).length;
 
       recentRows.sort(function (a, b) {
         return a.project.start.localeCompare(b.project.start);
@@ -1640,15 +1676,18 @@
         return true;
       });
 
-      // 按差旅日期排序（默认倒序，可点表头切换），同日按项目名称排序（§6.3）
+      return sortTravels(filtered);
+    }
+
+    // 按差旅日期排序（默认倒序，可点表头切换），同日按项目名称排序（§6.3）
+    function sortTravels(list) {
       var dirMul = ui.tSort.dir === 'asc' ? 1 : -1;
-      filtered.sort(function (a, b) {
+      return list.sort(function (a, b) {
         var da = String(a.date || '');
         var db = String(b.date || '');
         if (da !== db) return dirMul * da.localeCompare(db);
         return String(a.name || '').localeCompare(String(b.name || ''), 'zh-CN');
       });
-      return filtered;
     }
 
     function renderTravelsTab() {
@@ -2009,7 +2048,11 @@
         '<div class="eval-meta-right">' +
         '<button type="button" class="btn btn-outline btn-sm" data-eval-action="refresh">刷新</button>' +
         '<button type="button" class="btn btn-outline btn-sm" data-eval-action="import-travels">导入 Excel</button>' +
-        '<button type="button" class="btn btn-outline btn-sm" data-eval-action="export-travels" title="导出当前筛选结果，同时可作为导入模板">导出 Excel（模板）</button>' +
+        '<button type="button" class="btn btn-outline btn-sm" data-eval-action="export-travels" title="' +
+        (hasSel ? '仅导出已勾选的差旅记录，同时可作为导入模板' : '导出当前筛选结果（未筛选即全部），同时可作为导入模板') +
+        '">' +
+        (hasSel ? '导出所选（' + selectedList.length + ' 笔）' : '导出 Excel（模板）') +
+        '</button>' +
         '<button type="button" class="btn btn-primary btn-sm" data-eval-action="new-travel">+ 新建差旅</button>' +
         '</div>' +
         '</div>' +
@@ -2553,15 +2596,34 @@
         } else if (act === 'import-projects') {
           modals.open('eval-import-projects', {}, true);
         } else if (act === 'export-projects') {
-          var toExp = getFilteredProjects();
+          // 有勾选时只导出勾选记录（合并态勾选会包含被筛选隐藏的同名阶段），否则导出当前筛选结果
+          var pSelIds = evalStore.getSelectedProjectIds();
+          var toExp = pSelIds.length
+            ? evalStore.getProjects().filter(function (x) {
+                return evalStore.isProjectSelected(x.id);
+              })
+            : getFilteredProjects();
           Xlsx.exportProjectsXlsx(toExp, evalStore.getSettings());
-          showToast('已导出 ' + toExp.length + ' 条项目记录到 Excel', 'success');
+          showToast(
+            '已导出' + (pSelIds.length ? '所选 ' : ' ') + toExp.length + ' 条项目记录到 Excel',
+            'success'
+          );
         } else if (act === 'import-travels') {
           modals.open('eval-import-travels', {}, true);
         } else if (act === 'export-travels') {
-          var tExp = getFilteredTravels();
+          var tSelIds = evalStore.getSelectedTravelIds();
+          var tExp = tSelIds.length
+            ? sortTravels(
+                evalStore.getTravels().filter(function (x) {
+                  return evalStore.isTravelSelected(x.id);
+                })
+              )
+            : getFilteredTravels();
           Xlsx.exportTravelsXlsx(tExp, evalStore.getProjects());
-          showToast('已导出 ' + tExp.length + ' 笔差旅记录到 Excel（可作导入模板）', 'success');
+          showToast(
+            '已导出' + (tSelIds.length ? '所选 ' : ' ') + tExp.length + ' 笔差旅记录到 Excel（可作导入模板）',
+            'success'
+          );
         } else if (act === 'load-sample-projects') {
           actBtn.disabled = true;
           evalStore
@@ -2595,6 +2657,7 @@
         } else if (act === 'reset-p-filter') {
           ui.pFilter.query = '';
           ui.pFilter.levels = [];
+          ui.pFilter.roles = [];
           ui.pFilter.stages = [];
           ui.pFilter.statuses = [];
           ui.pFilter.settles = [];
