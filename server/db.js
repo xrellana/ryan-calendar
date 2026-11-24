@@ -177,7 +177,7 @@ function initDatabase({ dbPath, backupDir } = {}) {
   seedBuiltinHolidays(db);
   const bootstrapInfo = ensureInitialAdmin(db);
 
-  // 为所有已有账号确保系统受保护类别「外出评估」存在且名称一致
+  // 为所有已有账号确保系统受保护的评估类别存在（只按 ID 保证存在，名称由用户自定义）
   // 并把旧版「导入台账」生成的外出评估日程迁移为评估项目（幂等：已关联的日程不会重复处理）
   const allUsers = db.prepare('SELECT id FROM users').all();
   for (const u of allUsers) {
@@ -234,11 +234,8 @@ function ensureProtectedAssessmentCategory(db, userId) {
       `INSERT OR IGNORE INTO categories (id, user_id, name, color, sort_order, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`
     ).run(PROTECTED_ASSESSMENT_CAT_ID, userId, PROTECTED_ASSESSMENT_CAT_NAME, '#D97A12', sortOrder, now, now);
-  } else if (existing.name !== PROTECTED_ASSESSMENT_CAT_NAME) {
-    db.prepare(
-      'UPDATE categories SET name = ?, updated_at = ? WHERE user_id = ? AND id = ?'
-    ).run(PROTECTED_ASSESSMENT_CAT_NAME, now, userId, PROTECTED_ASSESSMENT_CAT_ID);
   }
+  // 已存在时不再强制改回默认名称：联动只依赖 ID，用户改过的名称应保留
 }
 
 function seedDefaultCategories(db, userId) {
@@ -483,7 +480,7 @@ function listEvalTravelsForUser(db, userId) {
 }
 
 /**
- * 同步单条评估项目记录到当前用户的工作日程（category_id 固定为 cat-assessment「外出评估」）
+ * 同步单条评估项目记录到当前用户的工作日程（category_id 固定为 cat-assessment，名称可由用户自定义）
  * - 有开始时间：创建或更新对应的全天日程（标题保留“预评估/正式评估”）
  * - 未排期（无开始时间）：若此前有关联日程则自动删除
  */

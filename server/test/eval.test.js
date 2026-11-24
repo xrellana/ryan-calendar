@@ -258,11 +258,16 @@ test('Backend eval platform: strict user_id isolation, protected assessment cate
   await alice.req('POST', '/api/auth/login', { username: 'alice', password: 'AlicePassword123' });
   await bob.req('POST', '/api/auth/login', { username: 'bob', password: 'BobPassword123' });
 
-  // 1. Protected「外出评估」category: cannot rename or delete, CAN change color
-  const renameProtected = await alice.req('PATCH', '/api/categories/cat-assessment', { name: '随便改名' });
-  assert.equal(renameProtected.status, 400);
+  // 1. Protected assessment category: CAN rename and change color, cannot delete
+  const renameProtected = await alice.req('PATCH', '/api/categories/cat-assessment', { name: '评估出差' });
+  assert.equal(renameProtected.status, 200);
+  assert.equal(renameProtected.json.category.name, '评估出差');
+  assert.equal(renameProtected.json.category.protected, true);
+  const emptyRename = await alice.req('PATCH', '/api/categories/cat-assessment', { name: '   ' });
+  assert.equal(emptyRename.status, 400);
   const delProtected = await alice.req('DELETE', '/api/categories/cat-assessment');
   assert.equal(delProtected.status, 400);
+  assert.match(delProtected.json.error, /评估出差/);
   const colorProtected = await alice.req('PATCH', '/api/categories/cat-assessment', { color: '#EA580C' });
   assert.equal(colorProtected.status, 200);
   assert.equal(colorProtected.json.category.color, '#EA580C');
@@ -287,6 +292,11 @@ test('Backend eval platform: strict user_id isolation, protected assessment cate
   assert.equal(pPre.json.event.startDate, '2026-12-01');
   assert.equal(pPre.json.event.endDate, '2026-12-02');
   assert.equal(pPre.json.event.evalProjectId, pPre.json.project.id);
+  // Renamed category keeps its custom name after state reload and project sync
+  const renamedState = (await alice.req('GET', '/api/state')).json;
+  const renamedCat = renamedState.categories.find((c) => c.id === 'cat-assessment');
+  assert.equal(renamedCat.name, '评估出差');
+  assert.equal(renamedState.categories.filter((c) => c.id === 'cat-assessment').length, 1);
 
   const pFormal = await alice.req('POST', '/api/eval/projects', {
     name: '华东新能源装备',

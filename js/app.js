@@ -186,6 +186,7 @@
     evalUI = WorkCal.EvalUI.createEvalUI({
       container: document.getElementById('eval-workspace'),
       evalStore: evalStore,
+      calendarStore: store,
       modals: modals,
       showToast: showToast,
       onDataChanged: render

@@ -16,9 +16,28 @@
       .replace(/'/g, '&#39;');
   }
 
+  var TRAVEL_MERGE_PREF_KEY = 'eval_travel_merge_rows';
+
+  function readTravelMergePref() {
+    try {
+      return localStorage.getItem(TRAVEL_MERGE_PREF_KEY) !== '0';
+    } catch (e) {
+      return true;
+    }
+  }
+
+  function saveTravelMergePref(flag) {
+    try {
+      localStorage.setItem(TRAVEL_MERGE_PREF_KEY, flag ? '1' : '0');
+    } catch (e) {
+      // 存储不可用时仅本次会话生效
+    }
+  }
+
   function createEvalUI(ctx) {
     var container = ctx.container;
     var evalStore = ctx.evalStore;
+    var calendarStore = ctx.calendarStore || null;
     var modals = ctx.modals;
     var showToast = ctx.showToast;
     var onDataChanged = ctx.onDataChanged;
@@ -84,7 +103,11 @@
         reimbs: [],
         query: '',
         groupBy: 'cat' // cat | project | month | reimb
-      }
+      },
+      // 差旅表按日期排序方向，默认倒序（§6.3）
+      tSort: { dir: 'desc' },
+      // 差旅表是否合并同项目同阶段的行（默认合并，按浏览器记住选择）
+      tMerge: readTravelMergePref()
     };
 
     // -----------------------------------------------------------------------
@@ -766,7 +789,9 @@
         tableAreaHtml =
           '<div class="eval-empty-state">' +
           '<div class="eval-empty-title">还没有评估项目</div>' +
-          '<div>新建项目后将自动按起止时间同步到工作日程（类别：外出评估），也可一键导入历史 Excel 台账。</div>' +
+          '<div>新建项目后将自动按起止时间同步到工作日程（类别：' +
+          esc(WorkCal.Config.getAssessmentCategoryName(calendarStore ? calendarStore.getCategories() : [])) +
+          '），也可一键导入历史 Excel 台账。</div>' +
           '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;">' +
           '<button type="button" class="btn btn-primary btn-sm" data-eval-action="new-project">+ 新建项目</button>' +
           '<button type="button" class="btn btn-outline btn-sm" data-eval-action="import-projects">导入 Excel</button>' +
@@ -1615,9 +1640,12 @@
         return true;
       });
 
-      // 默认按差旅日期倒序排列，同日按项目名称排序（§6.3）
+      // 按差旅日期排序（默认倒序，可点表头切换），同日按项目名称排序（§6.3）
+      var dirMul = ui.tSort.dir === 'asc' ? 1 : -1;
       filtered.sort(function (a, b) {
-        if (a.date !== b.date) return b.date.localeCompare(a.date);
+        var da = String(a.date || '');
+        var db = String(b.date || '');
+        if (da !== db) return dirMul * da.localeCompare(db);
         return String(a.name || '').localeCompare(String(b.name || ''), 'zh-CN');
       });
       return filtered;
@@ -1669,8 +1697,7 @@
           rep: rep,
           repCnt: repCnt,
           done: done,
-          doneCnt: doneCnt,
-          avg: list.length > 0 ? Core.round2(total / list.length) : 0
+          doneCnt: doneCnt
         };
       };
 
@@ -1728,72 +1755,119 @@
       var allTChecked = filtered.length > 0 && visSelCount === filtered.length;
       var tIndeterminate = visSelCount > 0 && visSelCount < filtered.length;
 
-      var tbodyHtml = filtered
-        .map(function (t, idx) {
+      var renderLinkCells = function (t, link, rowSpan) {
+        var rs = rowSpan > 1 ? ' rowspan="' + rowSpan + '"' : '';
+        return (
+          '<td class="eval-project-name-cell eval-ellipsis"' +
+          rs +
+          ' title="' +
+          esc(t.name) +
+          '">' +
+          esc(t.name) +
+          '</td>' +
+          '<td' +
+          rs +
+          '>' +
+          esc(t.stage) +
+          '</td>' +
+          '<td' +
+          rs +
+          '>' +
+          (link.level ? esc(link.level) : '<span class="eval-muted">—</span>') +
+          '</td>' +
+          '<td class="eval-nowrap"' +
+          rs +
+          '>' +
+          (link.planText ? esc(link.planText) : '<span class="eval-muted">—</span>') +
+          '</td>'
+        );
+      };
+
+      // linkCellsHtml 为空字符串表示该行处在合并组内部，项目信息列由组首行的 rowspan 覆盖
+      var renderTravelRow = function (t, seq, linkCellsHtml, extraCls) {
+        var isSel = evalStore.isTravelSelected(t.id);
+        var reimbOpts = Core.REIMB_STATUSES.map(function (r) {
+          return '<option value="' + r + '"' + (r === t.reimb ? ' selected' : '') + '>' + r + '</option>';
+        }).join('');
+        var trCls = ((extraCls || '') + (isSel ? ' is-selected' : '')).trim();
+        return (
+          '<tr class="' +
+          trCls +
+          '">' +
+          '<td class="eval-center eval-col-check"><input type="checkbox" data-eval-t-check-one="' +
+          esc(t.id) +
+          '"' +
+          (isSel ? ' checked' : '') +
+          '></td>' +
+          '<td class="eval-center">' +
+          seq +
+          '</td>' +
+          linkCellsHtml +
+          '<td class="eval-nowrap">' +
+          esc(Core.formatDateSlash(t.date)) +
+          '</td>' +
+          '<td>' +
+          esc(Core.getTravelDisplayCat(t)) +
+          '</td>' +
+          '<td class="eval-num">¥' +
+          esc(Core.formatMoney(t.amount)) +
+          '</td>' +
+          '<td class="eval-ellipsis" title="' +
+          esc(t.detail || '') +
+          '">' +
+          (t.detail ? esc(t.detail) : '<span class="eval-muted">—</span>') +
+          '</td>' +
+          '<td class="eval-center"><select class="eval-badge-select st-' +
+          esc(t.reimb) +
+          '" data-eval-inline-reimb="' +
+          esc(t.id) +
+          '">' +
+          reimbOpts +
+          '</select></td>' +
+          '<td class="eval-center eval-col-action"><div class="eval-row-actions">' +
+          '<button type="button" class="eval-link-btn" data-eval-edit-travel="' +
+          esc(t.id) +
+          '">编辑</button>' +
+          '<button type="button" class="eval-link-btn is-danger" data-eval-del-travel="' +
+          esc(t.id) +
+          '">删除</button>' +
+          '</div></td>' +
+          '</tr>'
+        );
+      };
+
+      var tbodyHtml = '';
+      if (ui.tMerge) {
+        // 合并键包含等级与计划：同名同阶段的不同年度项目可能关联到不同的计划，不应合并
+        var tGroups = [];
+        var tGroupIndex = {};
+        filtered.forEach(function (t) {
           var link = Core.resolveTravelDisplayLink(t, projects);
-          var isSel = evalStore.isTravelSelected(t.id);
-          var reimbOpts = Core.REIMB_STATUSES.map(function (r) {
-            return '<option value="' + r + '"' + (r === t.reimb ? ' selected' : '') + '>' + r + '</option>';
-          }).join('');
-          return (
-            '<tr class="' +
-            (isSel ? 'is-selected' : '') +
-            '">' +
-            '<td class="eval-center eval-col-check"><input type="checkbox" data-eval-t-check-one="' +
-            esc(t.id) +
-            '"' +
-            (isSel ? ' checked' : '') +
-            '></td>' +
-            '<td class="eval-center">' +
-            (idx + 1) +
-            '</td>' +
-            '<td class="eval-nowrap">' +
-            esc(Core.formatDateSlash(t.date)) +
-            '</td>' +
-            '<td class="eval-project-name-cell eval-ellipsis" title="' +
-            esc(t.name) +
-            '">' +
-            esc(t.name) +
-            '</td>' +
-            '<td>' +
-            esc(t.stage) +
-            '</td>' +
-            '<td>' +
-            (link.level ? esc(link.level) : '<span class="eval-muted">—</span>') +
-            '</td>' +
-            '<td class="eval-nowrap">' +
-            (link.planText ? esc(link.planText) : '<span class="eval-muted">—</span>') +
-            '</td>' +
-            '<td>' +
-            esc(Core.getTravelDisplayCat(t)) +
-            '</td>' +
-            '<td class="eval-num">¥' +
-            esc(Core.formatMoney(t.amount)) +
-            '</td>' +
-            '<td class="eval-ellipsis" title="' +
-            esc(t.detail || '') +
-            '">' +
-            (t.detail ? esc(t.detail) : '<span class="eval-muted">—</span>') +
-            '</td>' +
-            '<td class="eval-center"><select class="eval-badge-select st-' +
-            esc(t.reimb) +
-            '" data-eval-inline-reimb="' +
-            esc(t.id) +
-            '">' +
-            reimbOpts +
-            '</select></td>' +
-            '<td class="eval-center eval-col-action"><div class="eval-row-actions">' +
-            '<button type="button" class="eval-link-btn" data-eval-edit-travel="' +
-            esc(t.id) +
-            '">编辑</button>' +
-            '<button type="button" class="eval-link-btn is-danger" data-eval-del-travel="' +
-            esc(t.id) +
-            '">删除</button>' +
-            '</div></td>' +
-            '</tr>'
-          );
-        })
-        .join('');
+          var gKey = [t.name || '', t.stage || '', link.level || '', link.planText || ''].join('||');
+          if (!tGroupIndex[gKey]) {
+            tGroupIndex[gKey] = { first: t, link: link, rows: [] };
+            tGroups.push(tGroupIndex[gKey]);
+          }
+          tGroupIndex[gKey].rows.push(t);
+        });
+        var seq = 0;
+        tGroups.forEach(function (grp, gIdx) {
+          var bandCls = gIdx % 2 === 1 ? ' eval-band-alt' : '';
+          grp.rows.forEach(function (t, rIdx) {
+            seq++;
+            var cls = (rIdx === 0 && gIdx > 0 ? 'eval-group-first' : '') + bandCls;
+            var cells = rIdx === 0 ? renderLinkCells(grp.first, grp.link, grp.rows.length) : '';
+            tbodyHtml += renderTravelRow(t, seq, cells, cls);
+          });
+        });
+      } else {
+        tbodyHtml = filtered
+          .map(function (t, idx) {
+            var link = Core.resolveTravelDisplayLink(t, projects);
+            return renderTravelRow(t, idx + 1, renderLinkCells(t, link, 1), '');
+          })
+          .join('');
+      }
 
       var batchBarHtml = hasSel
         ? '<div class="eval-batch-bar">' +
@@ -1847,11 +1921,13 @@
           (allTChecked ? ' checked' : '') +
           '></th>' +
           '<th class="eval-center" style="width:50px;">序号</th>' +
-          '<th>差旅日期</th>' +
           '<th class="eval-center">项目名称</th>' +
           '<th>评估阶段</th>' +
           '<th>等级</th>' +
           '<th>评估计划</th>' +
+          '<th class="is-sortable is-sorted" data-eval-t-sort="date" title="点击切换排序">差旅日期<span class="eval-sort-arrow">' +
+          (ui.tSort.dir === 'asc' ? '▲' : '▼') +
+          '</span></th>' +
           '<th>差旅类别</th>' +
           '<th class="eval-num">金额（元）</th>' +
           '<th>差旅具体内容</th>' +
@@ -1937,7 +2013,7 @@
         '<button type="button" class="btn btn-primary btn-sm" data-eval-action="new-travel">+ 新建差旅</button>' +
         '</div>' +
         '</div>' +
-        '<div class="eval-kpi-grid cols-5' +
+        '<div class="eval-kpi-grid cols-4' +
         (hasSel ? ' is-selected-scope' : '') +
         '">' +
         '<div class="eval-kpi-card"><div class="eval-kpi-label">差旅总额</div><div class="eval-kpi-value">¥' +
@@ -1964,13 +2040,9 @@
         '</div><div class="eval-kpi-sub">' +
         stats.doneCnt +
         ' 笔已结算</div></div>' +
-        '<div class="eval-kpi-card"><div class="eval-kpi-label">单笔平均</div><div class="eval-kpi-value">¥' +
-        esc(Core.formatMoney(stats.avg)) +
-        '</div><div class="eval-kpi-sub">' +
-        (hasSel ? '所选 ' + stats.count + ' 笔平均' : '当前筛选结果') +
-        '</div></div>' +
         '</div>' +
         '<div class="eval-card is-filter-card">' +
+        '<div class="eval-filter-row">' +
         '<div class="eval-filter-controls">' +
         '<input type="date" class="eval-filter-date" data-eval-t-start value="' +
         esc(ui.tFilter.start) +
@@ -2006,6 +2078,14 @@
         esc(ui.tFilter.query) +
         '">' +
         '<button type="button" class="btn btn-subtle btn-sm" data-eval-action="reset-t-filter">重置</button>' +
+        '</div>' +
+        '<label class="eval-toggle">' +
+        '<input type="checkbox" id="eval-t-merge-toggle"' +
+        (ui.tMerge ? ' checked' : '') +
+        '>' +
+        '<span class="eval-toggle-slider"></span>' +
+        '<span>合并同名项目</span>' +
+        '</label>' +
         '</div>' +
         '</div>' +
         '<div class="eval-card">' +
@@ -2306,6 +2386,14 @@
             bk2.arr.length = 0;
             render();
           }
+          return;
+        }
+
+        // 差旅表头：差旅日期排序切换
+        var tSortTh = t.closest('[data-eval-t-sort]');
+        if (tSortTh) {
+          ui.tSort.dir = ui.tSort.dir === 'asc' ? 'desc' : 'asc';
+          render();
           return;
         }
 
@@ -2625,6 +2713,13 @@
 
         if (t.id === 'eval-merge-toggle') {
           evalStore.setMergeNames(t.checked);
+          render();
+          return;
+        }
+
+        if (t.id === 'eval-t-merge-toggle') {
+          ui.tMerge = t.checked;
+          saveTravelMergePref(t.checked);
           render();
           return;
         }

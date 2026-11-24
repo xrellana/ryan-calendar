@@ -840,8 +840,10 @@
   }
 
   function defaultCategoryIdForStage(categories) {
+    // 按 ID 匹配评估类别，用户改名后仍能命中
+    var assessId = (WorkCal.Config && WorkCal.Config.protectedAssessmentCategoryId) || 'cat-assessment';
     for (var i = 0; i < categories.length; i++) {
-      if (categories[i].name === '外出评估') return categories[i].id;
+      if (categories[i].id === assessId) return categories[i].id;
     }
     return categories.length ? categories[0].id : '__fallback__';
   }
