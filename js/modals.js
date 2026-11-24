@@ -212,7 +212,9 @@
         '（' +
         esc(proj.stage) +
         '）」？此操作不可撤销。</strong><br>' +
-        '<div style="margin-top:6px;">删除后将同步移除工作日程中对应的「外出评估」日程记录；若该项目有另一阶段记录仍会保留，且历史差旅支出记录不受影响。</div>' +
+        '<div style="margin-top:6px;">删除后将同步移除工作日程中对应的「' +
+        esc(WorkCal.Config.getAssessmentCategoryName(store.getCategories())) +
+        '」日程记录；若该项目有另一阶段记录仍会保留，且历史差旅支出记录不受影响。</div>' +
         '</div>' +
         '</div>' +
         '<div class="modal-footer modal-footer-between">' +
@@ -492,7 +494,7 @@
       var draft = currentPayload.draft || null;
       var assessId = WorkCal.Config.protectedAssessmentCategoryId || 'cat-assessment';
 
-      // 编辑已关联评估项目的「外出评估」日程时，直接切换至完整评估项目编辑弹窗（双向同步）
+      // 编辑已关联评估项目的评估类别日程时，直接切换至完整评估项目编辑弹窗（双向同步）
       // 本地评估数据可能落后于日程（例如其他设备刚新增项目），先刷新一次再决定，避免退回普通日程表单
       if (
         editing &&
@@ -539,7 +541,7 @@
         currentPayload.categoryId ||
         (firstNonAssess ? firstNonAssess.id : categories[0] ? categories[0].id : '__fallback__');
 
-      // 若显式以「外出评估」新建日程，直接进入评估项目同步表单
+      // 若显式以评估类别新建日程，直接进入评估项目同步表单
       if (!editing && defaultCatId === assessId && evalStore) {
         currentType = 'eval-project-editor';
         currentPayload = {
@@ -957,9 +959,9 @@
                 '" data-cat-rename="' +
                 esc(c.id) +
                 '"' +
-                (isProtected ? ' readonly title="系统保护类别，不可改名（可换色与调序）"' : '') +
+                (isProtected ? ' title="与评估项目联动的系统类别，可改名、换色与调序，但不可删除"' : '') +
                 ' aria-label="类别名称">' +
-                (isProtected ? '<span class="tag-badge" style="background:#fff7ed;color:#c2410c;">保护</span>' : '') +
+                (isProtected ? '<span class="tag-badge" style="background:#fff7ed;color:#c2410c;" title="与评估项目双向联动">联动</span>' : '') +
                 '<div class="cat-row-actions">' +
                 '<button type="button" class="btn btn-subtle btn-sm" data-modal-action="move-cat-up" data-cat-id="' +
                 esc(c.id) +
@@ -974,7 +976,7 @@
                 '<button type="button" class="btn btn-danger btn-sm" data-modal-action="ask-delete-cat" data-cat-id="' +
                 esc(c.id) +
                 '"' +
-                (isProtected ? ' disabled title="系统保护类别不可删除"' : ' title="删除类别"') +
+                (isProtected ? ' disabled title="与评估项目联动的系统类别不可删除"' : ' title="删除类别"') +
                 '>删</button>' +
                 '</div>' +
                 '</div>' +

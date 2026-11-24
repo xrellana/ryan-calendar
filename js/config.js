@@ -11,9 +11,13 @@
     legacyStorageKey: 'work_calendar_v1',
 
     /**
-     * 系统受保护的评估类别 ID（不可删除、不可改名，允许改色与调优先级）
+     * 系统受保护的评估类别 ID（不可删除，允许改名、改色与调优先级）
+     * 日程与评估项目的联动只认这个 ID，因此改名不会影响双向同步
      */
     protectedAssessmentCategoryId: 'cat-assessment',
+    /**
+     * 评估类别的默认名称：仅用于新账号初始化与找不到该类别时的文案兜底
+     */
     protectedAssessmentCategoryName: '外出评估',
 
     /**
@@ -36,6 +40,20 @@
       color: '#64748B',
       isFallback: true
     }
+  };
+
+  /**
+   * 取评估类别的当前显示名称（用户可能已改名），找不到时回退到默认名称
+   */
+  WorkCal.Config.getAssessmentCategoryName = function (categories) {
+    var cfg = WorkCal.Config;
+    var list = categories || [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i] && list[i].id === cfg.protectedAssessmentCategoryId && list[i].name) {
+        return list[i].name;
+      }
+    }
+    return cfg.protectedAssessmentCategoryName;
   };
 
   if (typeof module !== 'undefined' && module.exports) {

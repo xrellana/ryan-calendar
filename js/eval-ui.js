@@ -19,6 +19,7 @@
   function createEvalUI(ctx) {
     var container = ctx.container;
     var evalStore = ctx.evalStore;
+    var calendarStore = ctx.calendarStore || null;
     var modals = ctx.modals;
     var showToast = ctx.showToast;
     var onDataChanged = ctx.onDataChanged;
@@ -766,7 +767,9 @@
         tableAreaHtml =
           '<div class="eval-empty-state">' +
           '<div class="eval-empty-title">还没有评估项目</div>' +
-          '<div>新建项目后将自动按起止时间同步到工作日程（类别：外出评估），也可一键导入历史 Excel 台账。</div>' +
+          '<div>新建项目后将自动按起止时间同步到工作日程（类别：' +
+          esc(WorkCal.Config.getAssessmentCategoryName(calendarStore ? calendarStore.getCategories() : [])) +
+          '），也可一键导入历史 Excel 台账。</div>' +
           '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;">' +
           '<button type="button" class="btn btn-primary btn-sm" data-eval-action="new-project">+ 新建项目</button>' +
           '<button type="button" class="btn btn-outline btn-sm" data-eval-action="import-projects">导入 Excel</button>' +

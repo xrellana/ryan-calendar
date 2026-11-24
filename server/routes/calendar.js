@@ -220,9 +220,6 @@ function createCalendarRouter(db, authMw) {
       if (!cleaned) {
         return res.status(400).json({ error: '类别名称不能为空' });
       }
-      if (cid === PROTECTED_ASSESSMENT_CAT_ID && cleaned !== PROTECTED_ASSESSMENT_CAT_NAME) {
-        return res.status(400).json({ error: `「${PROTECTED_ASSESSMENT_CAT_NAME}」为系统保护类别，不可修改名称` });
-      }
       nextName = cleaned;
     }
     if (req.body && req.body.color !== undefined) {
@@ -243,7 +240,11 @@ function createCalendarRouter(db, authMw) {
   router.delete('/categories/:id', (req, res) => {
     const cid = String(req.params.id || '');
     if (cid === PROTECTED_ASSESSMENT_CAT_ID) {
-      return res.status(400).json({ error: `「${PROTECTED_ASSESSMENT_CAT_NAME}」为系统保护类别，不可删除` });
+      const current = db
+        .prepare('SELECT name FROM categories WHERE user_id = ? AND id = ?')
+        .get(req.user.id, cid);
+      const label = (current && current.name) || PROTECTED_ASSESSMENT_CAT_NAME;
+      return res.status(400).json({ error: `「${label}」与评估项目联动，为系统保护类别，不可删除` });
     }
     const info = db
       .prepare('DELETE FROM categories WHERE user_id = ? AND id = ?')

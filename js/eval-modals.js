@@ -194,6 +194,7 @@
     );
     var initFeeStr = initEff.fee !== null ? initEff.fee.toFixed(2) : '';
 
+    var assessName = WorkCal.Config.getAssessmentCategoryName(calStore ? calStore.getCategories() : []);
     var catRowHtml = '';
     if (fromCalendar && calStore) {
       var cats = calStore.getCategories();
@@ -217,7 +218,7 @@
         '<label class="form-label" for="ep-cal-category">行程类别 *</label>' +
         (lockedToEval
           ? '<span class="tag-badge" style="background:#fff7ed;color:#c2410c;">已关联评估项目 · 双向同步</span>'
-          : '<span class="form-hint">选择「外出评估」将同步录入评估项目管理平台</span>') +
+          : '<span class="form-hint">选择「' + esc(assessName) + '」将同步录入评估项目管理平台</span>') +
         '</div>' +
         '<select id="ep-cal-category" class="select-control"' +
         (lockedToEval ? ' disabled' : '') +
@@ -230,7 +231,7 @@
     var titleText = fromCalendar
       ? editing
         ? '编辑评估日程（同步评估项目）'
-        : '新建日程 · 外出评估（同步项目台账）'
+        : '新建日程 · ' + assessName + '（同步项目台账）'
       : editing
         ? '编辑评估项目'
         : '新建评估项目';
@@ -377,7 +378,7 @@
     var errEl = document.getElementById('ep-error');
     var calCatEl = document.getElementById('ep-cal-category');
 
-    // 从工作日程新建/升级时，如果把类别切出「外出评估」，切回标准日程弹窗并保留已填草稿
+    // 从工作日程新建/升级时，如果把类别切出评估类别，切回标准日程弹窗并保留已填草稿
     if (calCatEl && !lockedToEval && ctx.onSwitchBackToStandardEvent) {
       calCatEl.addEventListener('change', function () {
         var assessId = WorkCal.Config.protectedAssessmentCategoryId || 'cat-assessment';
@@ -650,7 +651,7 @@
           });
         }
 
-        // 若从工作日程把一条旧普通日程改成了「外出评估」，先建项目生成联动日程，再删除原普通日程避免重复
+        // 若从工作日程把一条旧普通日程改成了评估类别，先建项目生成联动日程，再删除原普通日程避免重复
         var prevUnlinkedId = fromCalendar && calendarEventId && !editing ? calendarEventId : '';
         return evalStore.createProject(body).then(function () {
           if (prevUnlinkedId && calStore) {
@@ -661,7 +662,7 @@
           ctx.closeAfterBusy();
           ctx.showToast(
             fromCalendar
-              ? '已新建「外出评估」日程并同步添加至评估项目列表'
+              ? '已新建「' + assessName + '」日程并同步添加至评估项目列表'
               : '已新建项目并自动同步至工作日程',
             'success'
           );
@@ -1008,7 +1009,9 @@
         '<div class="modal-body">' +
         '<div id="ep-imp-drop" class="dropzone" tabindex="0">' +
         '<div><strong>点击选择或拖入 Excel (.xlsx) / CSV 文件</strong></div>' +
-        '<div class="form-hint" style="margin-top:4px;">支持合并单元格沿用上一行名称、日期与状态自动归一、按「名称+阶段+开始时间」去重，导入后自动同步至工作日程（类别：外出评估）</div>' +
+        '<div class="form-hint" style="margin-top:4px;">支持合并单元格沿用上一行名称、日期与状态自动归一、按「名称+阶段+开始时间」去重，导入后自动同步至工作日程（类别：' +
+        esc(WorkCal.Config.getAssessmentCategoryName(ctx.store ? ctx.store.getCategories() : [])) +
+        '）</div>' +
         '<input id="ep-imp-file" type="file" accept=".xlsx,.csv,.tsv,.txt,.xls" class="hidden">' +
         '</div>' +
         '<div class="form-field">' +

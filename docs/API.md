@@ -115,7 +115,8 @@ val okHttpClient = OkHttpClient.Builder()
 }
 ```
 - 列表返回顺序即同日取色优先级（索引 0 最高）。
-- `id == "cat-assessment"`（「外出评估」）为**系统受保护类别**（`protected: true`）：不可删除、不可改名，允许修改 `color` 和调整排序。
+- `id == "cat-assessment"`（默认名称「外出评估」）为**系统受保护类别**（`protected: true`）：不可删除，允许改名、修改 `color` 和调整排序。
+- 日程与评估项目的联动只认 `id == "cat-assessment"`，不认 `name`。客户端判断、展示该类别时必须按 `id` 匹配，显示名称取自 `GET /api/state` 返回的 `categories`，不要写死「外出评估」。
 
 ### 2.3 CalendarEvent（工作日程）
 ```json
@@ -145,7 +146,7 @@ val okHttpClient = OkHttpClient.Builder()
 }
 ```
 - `endDate`: 单日日程为空字符串 `""`；跨天日程为结束日期 `YYYY-MM-DD`（闭区间，含当天）。
-- `source`: `"manual"`（普通手工日程）| `"eval"`（与评估项目绑定）| `"ledger"`（旧版台账导入、且类别不是「外出评估」的历史日程）。
+- `source`: `"manual"`（普通手工日程）| `"eval"`（与评估项目绑定）| `"ledger"`（旧版台账导入、且类别不是 `cat-assessment` 的历史日程）。
 - `evalProjectId`: 非空时表示该日程与评估项目一对一绑定；为空字符串表示普通日程。
 - `ledgerKey` / `ledgerMeta`: **仅当 `source` 为 `"ledger"` 或 `"eval"` 时返回**，普通日程的响应中不含这两个字段，Android 数据模型需声明为可空。
   - 在评估项目页新建的日程 `ledgerKey` 为 `""`；由旧台账迁移而来的日程保留原 `ledgerKey`。
@@ -312,7 +313,7 @@ val okHttpClient = OkHttpClient.Builder()
 | 方法 | 路径 | 请求体 | 响应 | 备注 |
 | :--- | :--- | :--- | :--- | :--- |
 | `POST` | `/api/categories` | `{ "name": "内部评审", "color": "#7C3AED" }` | `201 { "category", "categories" }` | `name` 最长 20 字，`color` 支持 `#RGB/#RRGGBB` |
-| `PATCH` | `/api/categories/:id` | `{ "name"?: "...", "color"?: "#..." }` | `200 { "category", "categories" }` | `cat-assessment` 禁止改名（返回 `400`），允许改色 |
+| `PATCH` | `/api/categories/:id` | `{ "name"?: "...", "color"?: "#..." }` | `200 { "category", "categories" }` | 名称去空格后不能为空（返回 `400`）；`cat-assessment` 允许改名与改色，联动不受影响 |
 | `DELETE` | `/api/categories/:id` | — | `200 { "ok": true, "categories" }` | `cat-assessment` 禁止删除（返回 `400`） |
 | `PUT` | `/api/categories/reorder` | `{ "orderedIds": ["cat-1", "cat-2", ...] }` | `200 { "categories" }` | 按数组顺序重排同日优先级 |
 
