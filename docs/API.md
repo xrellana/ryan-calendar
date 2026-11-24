@@ -528,7 +528,7 @@ val okHttpClient = OkHttpClient.Builder()
    - 若 `feeManual == null` 且对应 `feeRates[level][role] == null`：费用为空，界面展示 **「待设置」**，不计入费用合计并单独计数。
    - 否则：`fee = round2(days * rate)`（`days == 0` 时为 `0.00`）。
 4. **工作日程 ↔ 评估项目客户端路由**：
-   - 日程页「新建日程」选类别为 `cat-assessment`（外出评估）→ 切换为评估项目表单，保存调用 `POST /api/eval/projects`。
+   - 日程页「新建日程」选类别为 `cat-assessment`（默认名称「外出评估」，用户可改名）→ 切换为评估项目表单，保存调用 `POST /api/eval/projects`。
    - 日程页点击已有日程编辑：若 `event.evalProjectId` 非空 → 直接打开评估项目编辑表单，保存调用 `PATCH /api/eval/projects/:evalProjectId`（锁定类别不可切换）。本地评估数据里找不到该项目时，先刷新 `GET /api/eval/state` 再打开；日历上直接改日期可走 `PATCH /api/events/:id`（见 §5.5）。
    - 日程页删除已有日程：若 `event.evalProjectId` 非空 → 二次确认提示“将同步删除评估项目列表中的对应记录（历史差旅保留）”，确认后调用 `DELETE /api/events/:id` 并从本地移除 `deletedEvalProjectId`。
 5. **时间统计三口径（不可混用）**：
@@ -538,5 +538,9 @@ val okHttpClient = OkHttpClient.Builder()
 6. **合并同名项目口径**：
    - 组内排序固定：`预评估` 在前、`正式评估` 在后。
    - 合并态项目整体状态：有 `正式评估` 取 `正式评估` 状态，否则取 `预评估` 状态；修改状态时传 `syncGroupStatus: true` 同步整组。
-7. **差旅联动规则**：
+   - 合并态展示：项目名称整组合并；`level` / `role` 仅在组内全部记录取值一致时合并，不一致时逐行展示。
+7. **项目数统计口径**：凡是展示「项目数」的地方，一律按项目 `name` 去重计数，同一项目的 `预评估` 与 `正式评估` 只算一个项目；评估天数、评估费用仍按每条记录累加。
+   - 适用于：项目列表 KPI、评估费用统计的项目数 / 未结项目数 / 费率待设置项目数 / 分组表项目数、评估天数统计的今日在评估项目 / 窗口内评估项目 / 月度涵盖项目数、差旅的项目数。
+   - 未结项目数：该名称下任一记录 `settle == "未结"` 即计入；费率待设置项目数同理。
+8. **差旅联动规则**：
    - 选择已有项目名后，按 `|travel.date - project.start|` 距离自动选中最近阶段，并带出该阶段的 `level` 与评估计划区间；允许输入未登记的新项目名称。
