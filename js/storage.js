@@ -20,14 +20,18 @@
 
   function normalizeCategory(cat) {
     var Color = WorkCal.Color;
+    var cfg = getConfig();
+    var protectedId = (cfg && cfg.protectedAssessmentCategoryId) || 'cat-assessment';
+    var id = cat && cat.id ? String(cat.id) : 'cat-' + Date.now().toString(36);
     var name = String((cat && cat.name) || '').trim().slice(0, 20) || '未命名类别';
     var color = Color
       ? Color.normalizeHex(cat && cat.color)
       : String((cat && cat.color) || '#2B6CD4').toUpperCase();
     return {
-      id: cat && cat.id ? String(cat.id) : 'cat-' + Date.now().toString(36),
+      id: id,
       name: name,
-      color: color
+      color: color,
+      protected: Boolean((cat && cat.protected) || id === protectedId)
     };
   }
 
@@ -42,7 +46,8 @@
     var startTime = allDay ? '' : String((ev && ev.startTime) || '09:00').slice(0, 5);
     var endTime = allDay ? '' : String((ev && ev.endTime) || '18:00').slice(0, 5);
     var notes = String((ev && ev.notes) || '').slice(0, 500);
-    var source = ev && ev.source === 'ledger' ? 'ledger' : 'manual';
+    var evalProjectId = String((ev && ev.evalProjectId) || '');
+    var source = evalProjectId ? 'eval' : ev && ev.source === 'ledger' ? 'ledger' : 'manual';
 
     var out = {
       id: ev && ev.id ? String(ev.id) : 'evt-' + Date.now().toString(36),
@@ -55,17 +60,20 @@
       endTime: endTime,
       notes: notes,
       source: source,
+      evalProjectId: evalProjectId,
       createdAt: (ev && ev.createdAt) || new Date().toISOString(),
       updatedAt: (ev && ev.updatedAt) || new Date().toISOString()
     };
-    if (source === 'ledger') {
+    if (source === 'ledger' || source === 'eval') {
       out.ledgerKey = String((ev && ev.ledgerKey) || '');
       if (ev && ev.ledgerMeta) {
         out.ledgerMeta = {
           projectName: String(ev.ledgerMeta.projectName || ''),
           stage: String(ev.ledgerMeta.stage || ''),
           level: String(ev.ledgerMeta.level || ''),
-          role: String(ev.ledgerMeta.role || '')
+          role: String(ev.ledgerMeta.role || ''),
+          status: String(ev.ledgerMeta.status || ''),
+          settle: String(ev.ledgerMeta.settle || '')
         };
       }
     }
@@ -390,21 +398,30 @@
     }
 
     function deleteEvent(id) {
-      return api.deleteEvent(id).then(function () {
+      return api.deleteEvent(id).then(function (res) {
         state.events = state.events.filter(function (e) {
           return e.id !== id;
         });
         state.updatedAt = new Date().toISOString();
-        return true;
+        return {
+          ok: true,
+          deletedEvalProjectId: (res && res.deletedEvalProjectId) || ''
+        };
       });
     }
 
     function clearAllEvents() {
       return api.clearAllEvents().then(function (res) {
-        var deleted = (res && res.deleted) || state.events.length;
-        state.events = [];
+        var deleted = (res && res.deleted) || 0;
+        var skippedEvalCount = (res && res.skippedEvalCount) || 0;
+        state.events = state.events.filter(function (e) {
+          return Boolean(e.evalProjectId);
+        });
         state.updatedAt = new Date().toISOString();
-        return deleted;
+        return {
+          deleted: deleted,
+          skippedEvalCount: skippedEvalCount
+        };
       });
     }
 
@@ -566,6 +583,7 @@
 
     return {
       loadFromServer: loadFromServer,
+      applyServerState: applyServerState,
       refreshIfChanged: refreshIfChanged,
       resetMemoryState: resetMemoryState,
       getState: getState,

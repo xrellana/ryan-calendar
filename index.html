@@ -15,6 +15,7 @@
   <link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16.png">
   <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png">
   <link rel="stylesheet" href="css/styles.css">
+  <link rel="stylesheet" href="css/eval.css">
 </head>
 <body>
   <noscript>
@@ -73,11 +74,15 @@
     <!-- 顶栏 -->
     <header class="topbar no-print">
       <div class="topbar-left">
-        <div class="brand" title="工作日程">
+        <div class="brand" title="工作日程与评估项目平台">
           <span class="brand-dot" aria-hidden="true"></span>
           <span class="brand-name">工作日程</span>
         </div>
-        <div class="nav-group">
+        <div class="module-switcher" role="tablist" aria-label="功能模块切换">
+          <button type="button" class="module-tab active" data-module="calendar" role="tab" aria-selected="true">工作日程</button>
+          <button type="button" class="module-tab" data-module="eval" role="tab" aria-selected="false">评估项目</button>
+        </div>
+        <div class="nav-group" data-cal-only="1">
           <button type="button" id="btn-prev" class="icon-btn" aria-label="上一周期" title="上一周期（左方向键）">‹</button>
           <button type="button" id="btn-today" class="btn btn-subtle btn-sm">今天</button>
           <button type="button" id="btn-next" class="icon-btn" aria-label="下一周期" title="下一周期（右方向键）">›</button>
@@ -86,7 +91,7 @@
       </div>
 
       <div class="topbar-right">
-        <div class="view-switcher" role="tablist" aria-label="日历视图切换">
+        <div class="view-switcher" data-cal-only="1" role="tablist" aria-label="日历视图切换">
           <button type="button" class="view-tab active" data-view="month" role="tab" aria-selected="true">月</button>
           <button type="button" class="view-tab" data-view="week" role="tab" aria-selected="false">周</button>
           <button type="button" class="view-tab" data-view="year" role="tab" aria-selected="false">年</button>
@@ -98,56 +103,62 @@
             <span class="user-avatar-dot" aria-hidden="true"></span>
             <span id="user-display-name" class="user-display-name">账号</span>
           </button>
-          <button type="button" id="btn-more" class="btn btn-outline">更多</button>
-          <button type="button" id="btn-import" class="btn btn-outline">导入台账</button>
-          <button type="button" id="btn-new-event" class="btn btn-primary"><span>+ 新建<span class="btn-label-desktop">日程</span></span></button>
+          <button type="button" id="btn-more" class="btn btn-outline" data-cal-only="1">更多</button>
+          <button type="button" id="btn-import" class="btn btn-outline" data-cal-only="1">导入台账</button>
+          <button type="button" id="btn-new-event" class="btn btn-primary" data-cal-only="1"><span>+ 新建<span class="btn-label-desktop">日程</span></span></button>
         </div>
       </div>
     </header>
 
-    <!-- 打印专用头部 -->
-    <div id="print-header" class="print-only print-header">
-      <div class="print-title-row">
-        <span class="print-app-name">工作日程表</span>
-        <span id="print-period-title" class="print-period-title"></span>
-        <span id="print-timestamp" class="print-timestamp"></span>
+    <!-- 工作日程模块容器 -->
+    <div id="calendar-workspace">
+      <!-- 打印专用头部 -->
+      <div id="print-header" class="print-only print-header">
+        <div class="print-title-row">
+          <span class="print-app-name">工作日程表</span>
+          <span id="print-period-title" class="print-period-title"></span>
+          <span id="print-timestamp" class="print-timestamp"></span>
+        </div>
       </div>
+
+      <!-- 搜索与图例筛选栏 -->
+      <section class="filter-legend-shell">
+        <div class="search-toolbar no-print">
+          <div class="search-input-wrap">
+            <span class="search-icon" aria-hidden="true">🔍</span>
+            <input
+              id="search-input"
+              type="search"
+              class="search-input"
+              placeholder="搜索日程标题、备注、项目名或类别..."
+              aria-label="搜索日程"
+            >
+            <button type="button" id="btn-clear-search" class="search-clear-btn hidden" aria-label="清空搜索" title="清空搜索">×</button>
+          </div>
+          <div id="filter-status" class="filter-status hidden">
+            <span id="filter-status-text" class="filter-status-text"></span>
+            <button type="button" id="btn-clear-filters" class="btn btn-subtle btn-sm">清除筛选</button>
+          </div>
+        </div>
+
+        <section id="legend-bar" class="legend-bar" aria-label="日程类别图例与筛选"></section>
+
+        <!-- 搜索结果速览面板（输入关键词时展开，点击直达对应日程） -->
+        <section id="search-results-panel" class="search-results-panel hidden no-print" aria-label="搜索结果"></section>
+      </section>
+
+      <!-- 节假日覆盖范围提示 -->
+      <div id="year-coverage-banner" class="coverage-banner hidden no-print" role="status"></div>
+
+      <!-- 工作区双栏布局 -->
+      <main class="workspace-layout">
+        <section id="calendar-stage" class="calendar-stage" aria-live="polite"></section>
+        <aside id="sidebar" class="sidebar no-print" aria-label="日程辅助面板"></aside>
+      </main>
     </div>
 
-    <!-- 搜索与图例筛选栏 -->
-    <section class="filter-legend-shell">
-      <div class="search-toolbar no-print">
-        <div class="search-input-wrap">
-          <span class="search-icon" aria-hidden="true">🔍</span>
-          <input
-            id="search-input"
-            type="search"
-            class="search-input"
-            placeholder="搜索日程标题、备注、项目名或类别..."
-            aria-label="搜索日程"
-          >
-          <button type="button" id="btn-clear-search" class="search-clear-btn hidden" aria-label="清空搜索" title="清空搜索">×</button>
-        </div>
-        <div id="filter-status" class="filter-status hidden">
-          <span id="filter-status-text" class="filter-status-text"></span>
-          <button type="button" id="btn-clear-filters" class="btn btn-subtle btn-sm">清除筛选</button>
-        </div>
-      </div>
-
-      <section id="legend-bar" class="legend-bar" aria-label="日程类别图例与筛选"></section>
-
-      <!-- 搜索结果速览面板（输入关键词时展开，点击直达对应日程） -->
-      <section id="search-results-panel" class="search-results-panel hidden no-print" aria-label="搜索结果"></section>
-    </section>
-
-    <!-- 节假日覆盖范围提示 -->
-    <div id="year-coverage-banner" class="coverage-banner hidden no-print" role="status"></div>
-
-    <!-- 工作区双栏布局 -->
-    <main class="workspace-layout">
-      <section id="calendar-stage" class="calendar-stage" aria-live="polite"></section>
-      <aside id="sidebar" class="sidebar no-print" aria-label="日程辅助面板"></aside>
-    </main>
+    <!-- 评估项目管理平台容器 -->
+    <section id="eval-workspace" class="eval-workspace hidden" aria-label="评估项目管理平台"></section>
   </div>
 
   <!-- 唯一浮层容器 -->
@@ -167,6 +178,12 @@
   <script defer src="js/api.js"></script>
   <script defer src="js/storage.js"></script>
   <script defer src="js/importer.js"></script>
+  <script defer src="js/eval-core.js"></script>
+  <script defer src="js/eval-xlsx.js"></script>
+  <script defer src="js/eval-charts.js"></script>
+  <script defer src="js/eval-store.js"></script>
+  <script defer src="js/eval-modals.js"></script>
+  <script defer src="js/eval-ui.js"></script>
   <script defer src="js/views.js"></script>
   <script defer src="js/modals.js"></script>
   <script defer src="js/app.js"></script>
