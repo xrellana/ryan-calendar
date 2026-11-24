@@ -107,6 +107,8 @@
       },
       // 差旅表按日期排序方向，默认倒序（§6.3）
       tSort: { dir: 'desc' },
+      // 同日上移/下移请求进行中，防止连点导致顺序基于过期数据计算
+      tMoving: false,
       // 差旅表是否合并同项目同阶段的行（默认合并，按浏览器记住选择）
       tMerge: readTravelMergePref()
     };
@@ -1679,15 +1681,23 @@
       return sortTravels(filtered);
     }
 
-    // 按差旅日期排序（默认倒序，可点表头切换），同日按项目名称排序（§6.3）
+    // 按差旅日期排序（默认倒序，可点表头切换），同日按手动顺序从早到晚（§6.3）
     function sortTravels(list) {
-      var dirMul = ui.tSort.dir === 'asc' ? 1 : -1;
+      var dir = ui.tSort.dir;
       return list.sort(function (a, b) {
-        var da = String(a.date || '');
-        var db = String(b.date || '');
-        if (da !== db) return dirMul * da.localeCompare(db);
-        return String(a.name || '').localeCompare(String(b.name || ''), 'zh-CN');
+        return Core.compareTravels(a, b, dir);
       });
+    }
+
+    // 同一展示段内（合并态为同一项目组）相邻的同日记录，用于决定上移/下移按钮及其目标
+    function buildTravelMoveTargets(rows) {
+      var targets = {};
+      for (var i = 0; i < rows.length; i++) {
+        var prev = i > 0 && rows[i - 1].date === rows[i].date ? rows[i - 1].id : '';
+        var next = i < rows.length - 1 && rows[i + 1].date === rows[i].date ? rows[i + 1].id : '';
+        targets[rows[i].id] = prev || next ? { upId: prev, downId: next } : null;
+      }
+      return targets;
     }
 
     function renderTravelsTab() {
@@ -1822,8 +1832,38 @@
         );
       };
 
+      // 当天只有一笔时不显示；位于当天首尾时对应方向的按钮置灰
+      var renderMoveBtns = function (t, move) {
+        if (!move) return '';
+        var btn = function (dirKey, anchorId, label, path) {
+          return (
+            '<button type="button" class="eval-t-move-btn" data-eval-t-move="' +
+            dirKey +
+            '" data-eval-t-id="' +
+            esc(t.id) +
+            '" data-eval-t-anchor="' +
+            esc(anchorId) +
+            '" title="' +
+            label +
+            '" aria-label="' +
+            label +
+            '"' +
+            (anchorId ? '' : ' disabled') +
+            '><svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="' +
+            path +
+            '" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>'
+          );
+        };
+        return (
+          '<span class="eval-t-move">' +
+          btn('up', move.upId, '在当天内上移', 'M3 7.5 6 4.5 9 7.5') +
+          btn('down', move.downId, '在当天内下移', 'M3 4.5 6 7.5 9 4.5') +
+          '</span>'
+        );
+      };
+
       // linkCellsHtml 为空字符串表示该行处在合并组内部，项目信息列由组首行的 rowspan 覆盖
-      var renderTravelRow = function (t, seq, linkCellsHtml, extraCls) {
+      var renderTravelRow = function (t, seq, linkCellsHtml, extraCls, move) {
         var isSel = evalStore.isTravelSelected(t.id);
         var reimbOpts = Core.REIMB_STATUSES.map(function (r) {
           return '<option value="' + r + '"' + (r === t.reimb ? ' selected' : '') + '>' + r + '</option>';
@@ -1844,6 +1884,7 @@
           linkCellsHtml +
           '<td class="eval-nowrap">' +
           esc(Core.formatDateSlash(t.date)) +
+          renderMoveBtns(t, move) +
           '</td>' +
           '<td>' +
           esc(Core.getTravelDisplayCat(t)) +
@@ -1892,18 +1933,20 @@
         var seq = 0;
         tGroups.forEach(function (grp, gIdx) {
           var bandCls = gIdx % 2 === 1 ? ' eval-band-alt' : '';
+          var groupMoves = buildTravelMoveTargets(grp.rows);
           grp.rows.forEach(function (t, rIdx) {
             seq++;
             var cls = (rIdx === 0 && gIdx > 0 ? 'eval-group-first' : '') + bandCls;
             var cells = rIdx === 0 ? renderLinkCells(grp.first, grp.link, grp.rows.length) : '';
-            tbodyHtml += renderTravelRow(t, seq, cells, cls);
+            tbodyHtml += renderTravelRow(t, seq, cells, cls, groupMoves[t.id]);
           });
         });
       } else {
+        var flatMoves = buildTravelMoveTargets(filtered);
         tbodyHtml = filtered
           .map(function (t, idx) {
             var link = Core.resolveTravelDisplayLink(t, projects);
-            return renderTravelRow(t, idx + 1, renderLinkCells(t, link, 1), '');
+            return renderTravelRow(t, idx + 1, renderLinkCells(t, link, 1), '', flatMoves[t.id]);
           })
           .join('');
       }
@@ -2437,6 +2480,38 @@
         if (tSortTh) {
           ui.tSort.dir = ui.tSort.dir === 'asc' ? 'desc' : 'asc';
           render();
+          return;
+        }
+
+        // 差旅同日内上移 / 下移
+        var tMoveBtn = t.closest('[data-eval-t-move]');
+        if (tMoveBtn) {
+          if (tMoveBtn.disabled || ui.tMoving) return;
+          var order = Core.buildTravelDayOrder(
+            evalStore.getTravels(),
+            tMoveBtn.getAttribute('data-eval-t-id'),
+            tMoveBtn.getAttribute('data-eval-t-anchor'),
+            tMoveBtn.getAttribute('data-eval-t-move') === 'down'
+          );
+          if (!order) return;
+          ui.tMoving = true;
+          tMoveBtn.disabled = true;
+          evalStore
+            .reorderTravels(order.date, order.ids)
+            .then(function () {
+              onDataChanged();
+            })
+            .catch(function (err) {
+              showToast((err && err.message) || '调整差旅顺序失败', 'error');
+              if (tMoveBtn.isConnected) tMoveBtn.disabled = false;
+              // 409 说明本地数据已过期（例如其他设备改了日期），拉一次最新数据让按钮目标重新计算
+              if (err && err.status === 409) {
+                evalStore.loadFromServer().then(onDataChanged).catch(function () {});
+              }
+            })
+            .finally(function () {
+              ui.tMoving = false;
+            });
           return;
         }
 

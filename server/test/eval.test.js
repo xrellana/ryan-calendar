@@ -604,3 +604,210 @@ test('Legacy ledger migration, eval-aware backup restore, linked event date writ
   assert.equal(sameNamed[0].color, '#123456');
   assert.equal(calState2.events.find((e) => e.id === plainEvt.json.event.id).categoryId, 'cat-assessment');
 });
+
+test('EvalCore travel ordering: dates follow the toggle, same-day rows keep manual order', () => {
+  const rows = [
+    { id: 'a', date: '2026-11-23', sortOrder: 2, name: 'P' },
+    { id: 'b', date: '2026-11-23', sortOrder: 1, name: 'P' },
+    { id: 'c', date: '2026-11-24', sortOrder: 1, name: 'P' },
+    { id: 'd', date: '2026-11-23', sortOrder: 3, name: 'P' }
+  ];
+  const ids = (dir) => rows.slice().sort((x, y) => EvalCore.compareTravels(x, y, dir)).map((r) => r.id);
+  assert.deepEqual(ids('desc'), ['c', 'b', 'a', 'd']);
+  assert.deepEqual(ids('asc'), ['b', 'a', 'd', 'c']);
+
+  // Move d above a (its visible neighbour); b stays first
+  assert.deepEqual(EvalCore.buildTravelDayOrder(rows, 'd', 'a', false), {
+    date: '2026-11-23',
+    ids: ['b', 'd', 'a']
+  });
+  // Move b below a; d (which may be hidden by a filter) keeps its place after them
+  assert.deepEqual(EvalCore.buildTravelDayOrder(rows, 'b', 'a', true).ids, ['a', 'b', 'd']);
+  // Rows on different days cannot be swapped
+  assert.equal(EvalCore.buildTravelDayOrder(rows, 'a', 'c', true), null);
+  assert.equal(EvalCore.buildTravelDayOrder(rows, 'a', 'missing', true), null);
+});
+
+test('Travel same-day manual ordering API: append on create, reorder, date change, import, restore, isolation', async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ryan-eval-order-test-'));
+  const dbPath = path.join(tmpDir, 'calendar.db');
+  const backupDir = path.join(tmpDir, 'backups');
+
+  process.env.ADMIN_USERNAME = 'admin';
+  process.env.ADMIN_PASSWORD = 'AdminPassword123!';
+
+  const { app, db } = createApp({ dbPath, backupDir });
+  const server = await new Promise((resolve) => {
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
+  });
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  t.after(async () => {
+    await new Promise((resolve) => server.close(resolve));
+    db.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const admin = createClient(baseUrl);
+  const dave = createClient(baseUrl);
+  const erin = createClient(baseUrl);
+  await admin.req('POST', '/api/auth/login', { username: 'admin', password: 'AdminPassword123!' });
+  for (const u of ['dave', 'erin']) {
+    await admin.req('POST', '/api/admin/users', {
+      username: u,
+      displayName: u,
+      password: 'OrderPassword123',
+      role: 'user'
+    });
+  }
+  await dave.req('POST', '/api/auth/login', { username: 'dave', password: 'OrderPassword123' });
+  await erin.req('POST', '/api/auth/login', { username: 'erin', password: 'OrderPassword123' });
+
+  const add = async (client, date, detail) => {
+    const r = await client.req('POST', '/api/eval/travels', {
+      date,
+      name: '排序测试项目',
+      stage: '正式评估',
+      cat: '打车',
+      amount: 10,
+      detail,
+      reimb: '未报'
+    });
+    assert.equal(r.status, 201);
+    return r.json.travel;
+  };
+  const dayDetails = async (client, date) => {
+    const st = (await client.req('GET', '/api/eval/state')).json;
+    return st.travels
+      .filter((x) => x.date === date)
+      .sort((a, b) => EvalCore.compareTravels(a, b, 'asc'))
+      .map((x) => x.detail);
+  };
+
+  // 1. New rows are appended to the end of their day
+  const taxi = await add(dave, '2026-11-23', '打车去现场');
+  const lunch = await add(dave, '2026-11-23', '午餐');
+  const hotel = await add(dave, '2026-11-23', '酒店');
+  const other = await add(dave, '2026-11-24', '返程');
+  assert.deepEqual([taxi.sortOrder, lunch.sortOrder, hotel.sortOrder, other.sortOrder], [1, 2, 3, 1]);
+
+  // 2. A back-filled row lands last and can be moved up
+  const train = await add(dave, '2026-11-23', '补记：高铁');
+  assert.equal(train.sortOrder, 4);
+  const reorder = await dave.req('POST', '/api/eval/travels/reorder', {
+    date: '2026-11-23',
+    ids: [train.id, taxi.id, lunch.id, hotel.id]
+  });
+  assert.equal(reorder.status, 200);
+  assert.deepEqual(await dayDetails(dave, '2026-11-23'), ['补记：高铁', '打车去现场', '午餐', '酒店']);
+
+  // 3. Rows left out of the request keep their relative order after the listed ones
+  const partial = await dave.req('POST', '/api/eval/travels/reorder', {
+    date: '2026-11-23',
+    ids: [hotel.id]
+  });
+  assert.equal(partial.status, 200);
+  assert.deepEqual(await dayDetails(dave, '2026-11-23'), ['酒店', '补记：高铁', '打车去现场', '午餐']);
+
+  // 4. Editing without a date change keeps the position; moving to another day appends there
+  const sameDay = await dave.req('PATCH', `/api/eval/travels/${train.id}`, { amount: 99 });
+  assert.equal(sameDay.status, 200);
+  assert.equal(sameDay.json.travel.sortOrder, 2);
+  const moved = await dave.req('PATCH', `/api/eval/travels/${hotel.id}`, { date: '2026-11-24' });
+  assert.equal(moved.status, 200);
+  assert.equal(moved.json.travel.sortOrder, 2);
+  assert.deepEqual(await dayDetails(dave, '2026-11-24'), ['返程', '酒店']);
+
+  // 5. Validation: stale or foreign ids are rejected without changing anything
+  const stale = await dave.req('POST', '/api/eval/travels/reorder', {
+    date: '2026-11-23',
+    ids: [hotel.id, taxi.id]
+  });
+  assert.equal(stale.status, 409);
+  const foreign = await erin.req('POST', '/api/eval/travels/reorder', {
+    date: '2026-11-23',
+    ids: [taxi.id]
+  });
+  assert.equal(foreign.status, 409);
+  const badDate = await dave.req('POST', '/api/eval/travels/reorder', { date: '2026/11/23', ids: [taxi.id] });
+  assert.equal(badDate.status, 400);
+  const dup = await dave.req('POST', '/api/eval/travels/reorder', {
+    date: '2026-11-23',
+    ids: [taxi.id, taxi.id]
+  });
+  assert.equal(dup.status, 400);
+  assert.deepEqual(await dayDetails(dave, '2026-11-23'), ['补记：高铁', '打车去现场', '午餐']);
+
+  // 6. Import appends rows to each day in file order
+  const imp = await dave.req('POST', '/api/eval/travels/import', {
+    mode: 'append',
+    items: [
+      { date: '2026-11-23', name: '排序测试项目', stage: '正式评估', cat: '餐饮', amount: 30, detail: '晚餐', reimb: '未报' },
+      { date: '2026-11-23', name: '排序测试项目', stage: '正式评估', cat: '住宿', amount: 300, detail: '第二晚', reimb: '未报' }
+    ]
+  });
+  assert.equal(imp.status, 200);
+  assert.deepEqual(await dayDetails(dave, '2026-11-23'), ['补记：高铁', '打车去现场', '午餐', '晚餐', '第二晚']);
+
+  // 7. JSON backup restore keeps sortOrder; legacy backups without it fall back to file order
+  const snapshot = (await dave.req('GET', '/api/eval/state')).json;
+  const restored = await dave.req('POST', '/api/eval/backup/restore', {
+    projects: [],
+    travels: snapshot.travels.slice().reverse(),
+    settings: snapshot.settings
+  });
+  assert.equal(restored.status, 200);
+  assert.deepEqual(await dayDetails(dave, '2026-11-23'), ['补记：高铁', '打车去现场', '午餐', '晚餐', '第二晚']);
+
+  const legacyTravels = snapshot.travels
+    .filter((x) => x.date === '2026-11-23')
+    .sort((a, b) => EvalCore.compareTravels(a, b, 'asc'))
+    .map(({ sortOrder, ...rest }) => rest);
+  const restoredLegacy = await dave.req('POST', '/api/eval/backup/restore', {
+    projects: [],
+    travels: legacyTravels,
+    settings: snapshot.settings
+  });
+  assert.equal(restoredLegacy.status, 200);
+  assert.deepEqual(await dayDetails(dave, '2026-11-23'), ['补记：高铁', '打车去现场', '午餐', '晚餐', '第二晚']);
+});
+
+test('Upgrading an old database backfills travel sort_order from the previous display order', () => {
+  const { initDatabase } = require('../db');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ryan-eval-migrate-order-'));
+  const dbPath = path.join(tmpDir, 'calendar.db');
+  const backupDir = path.join(tmpDir, 'backups');
+  try {
+    process.env.ADMIN_USERNAME = 'admin';
+    process.env.ADMIN_PASSWORD = 'AdminPassword123!';
+    const first = initDatabase({ dbPath, backupDir });
+    const userId = first.db.prepare("SELECT id FROM users WHERE username = 'admin'").get().id;
+    // Simulate a database created before the column existed
+    first.db.exec('ALTER TABLE eval_travels DROP COLUMN sort_order;');
+    const ins = first.db.prepare(
+      `INSERT INTO eval_travels (id, user_id, date, name, amount, detail, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 10, ?, ?, ?)`
+    );
+    ins.run('t-old', userId, '2026-11-23', '乙项目', 'older', '2026-11-01T00:00:00.000Z', '2026-11-01T00:00:00.000Z');
+    ins.run('t-new', userId, '2026-11-23', '乙项目', 'newer', '2026-11-02T00:00:00.000Z', '2026-11-02T00:00:00.000Z');
+    ins.run('t-a', userId, '2026-11-23', '甲项目', 'A', '2026-11-03T00:00:00.000Z', '2026-11-03T00:00:00.000Z');
+    ins.run('t-solo', userId, '2026-11-24', '乙项目', 'solo', '2026-11-03T00:00:00.000Z', '2026-11-03T00:00:00.000Z');
+    first.db.close();
+
+    const second = initDatabase({ dbPath, backupDir });
+    const rows = second.db
+      .prepare('SELECT id, sort_order FROM eval_travels WHERE user_id = ? ORDER BY date, sort_order')
+      .all(userId)
+      .map((r) => [r.id, r.sort_order]);
+    second.db.close();
+    // Same-day rows: project name in zh-CN order (甲 before 乙), then newest entry first, as the old UI showed them
+    assert.deepEqual(rows, [
+      ['t-a', 1],
+      ['t-new', 2],
+      ['t-old', 3],
+      ['t-solo', 1]
+    ]);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

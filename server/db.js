@@ -174,6 +174,15 @@ function initDatabase({ dbPath, backupDir } = {}) {
   }
   db.exec('CREATE INDEX IF NOT EXISTS idx_events_user_eval ON events(user_id, eval_project_id);');
 
+  // 兼容已有生产库：为差旅补齐同日手动排序列，并按升级前的显示顺序初始化
+  const travelCols = db.prepare('PRAGMA table_info(eval_travels)').all();
+  if (!travelCols.some((c) => c.name === 'sort_order')) {
+    withTransaction(db, () => {
+      db.exec('ALTER TABLE eval_travels ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;');
+      backfillTravelSortOrder(db);
+    });
+  }
+
   seedBuiltinHolidays(db);
   const bootstrapInfo = ensureInitialAdmin(db);
 
@@ -193,6 +202,37 @@ function initDatabase({ dbPath, backupDir } = {}) {
     backupDir: resolvedBackupDir,
     bootstrapInfo
   };
+}
+
+/**
+ * 升级前前端同日差旅按项目名称排序，同名时沿用服务端返回顺序（录入时间倒序），这里照此编号，
+ * 保证升级后页面看起来和升级前一致
+ */
+function backfillTravelSortOrder(db) {
+  const rows = db.prepare('SELECT user_id, id, date, name, created_at FROM eval_travels').all();
+  const byDay = new Map();
+  for (const r of rows) {
+    const key = r.user_id + '\u0000' + r.date;
+    if (!byDay.has(key)) byDay.set(key, []);
+    byDay.get(key).push(r);
+  }
+  const upd = db.prepare('UPDATE eval_travels SET sort_order = ? WHERE user_id = ? AND id = ?');
+  for (const list of byDay.values()) {
+    list.sort((a, b) => {
+      const byName = String(a.name || '').localeCompare(String(b.name || ''), 'zh-CN');
+      if (byName !== 0) return byName;
+      return String(b.created_at || '').localeCompare(String(a.created_at || ''));
+    });
+    list.forEach((r, idx) => upd.run(idx + 1, r.user_id, r.id));
+  }
+}
+
+// 新增、补记或改到其他日期的差旅默认排在当天最后
+function getNextTravelSortOrder(db, userId, date) {
+  const row = db
+    .prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM eval_travels WHERE user_id = ? AND date = ?')
+    .get(userId, date);
+  return (row ? Number(row.m) || 0 : 0) + 1;
 }
 
 function ensureProtectedAssessmentCategory(db, userId) {
@@ -428,6 +468,7 @@ function rowToEvalTravel(r) {
     amount: Number(r.amount) || 0,
     detail: r.detail || '',
     reimb: r.reimb || '未报',
+    sortOrder: Number(r.sort_order) || 0,
     createdAt: r.created_at,
     updatedAt: r.updated_at
   };
@@ -473,7 +514,7 @@ function listEvalTravelsForUser(db, userId) {
     .prepare(
       `SELECT * FROM eval_travels
        WHERE user_id = ?
-       ORDER BY date DESC, name ASC, created_at DESC`
+       ORDER BY date DESC, sort_order ASC, name ASC, created_at ASC`
     )
     .all(userId);
   return rows.map(rowToEvalTravel);
@@ -867,6 +908,7 @@ module.exports = {
   getEvalSettingsForUser,
   listEvalProjectsForUser,
   listEvalTravelsForUser,
+  getNextTravelSortOrder,
   syncProjectToCalendarEvent,
   deleteCalendarEventForProject,
   applyEventDatesToProject,
