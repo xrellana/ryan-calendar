@@ -8,9 +8,36 @@
 
 ## 1. Android 客户端接入必读
 
+### 1.0 Android 端功能范围
+Android 端**只面向普通用户**，不包含任何管理功能，**不做任何 Excel 导入/导出**，**不提供载入示例数据**，也**不做数据备份恢复、批量清空和评估规则/费率维护**。以下接口 Android 端**不接入**（仅 Web 端使用）：
+
+| 接口 | 原因 |
+| :--- | :--- |
+| `/api/admin/*`（§7 全部） | 账号管理、节假日维护、服务端备份均只在 Web 端由管理员操作 |
+| `POST /api/eval/projects/import` | Excel 导入评估项目（Web 端在浏览器内解析 Excel 后调用） |
+| `POST /api/eval/travels/import` | Excel 导入差旅记录（同上） |
+| `POST /api/events/import-ledger` | 旧版台账导入，已废弃 |
+| `POST /api/events/sample` | 载入示例日程（演示用） |
+| `POST /api/eval/projects/sample` | 载入示例评估项目（演示用） |
+| `POST /api/backup/restore` | 日程 JSON 备份恢复 |
+| `POST /api/eval/backup/restore` | 评估数据 JSON 备份恢复 |
+| `DELETE /api/events` | 清空全部普通日程 |
+| `DELETE /api/eval/all` | 清空全部评估数据 |
+| `PUT /api/eval/settings` | 修改评估天数规则与费率表 |
+| `POST /api/eval/settings/reset` | 恢复默认规则与费率 |
+
+补充说明：
+- **没有注册和找回密码**：服务端不支持自助注册，也没有找回密码接口，账号只能由管理员在 Web 端创建或重置密码。Android 登录页不要做「注册」「忘记密码」入口，最多提示「请联系管理员」。已登录用户可以在 Android 端自行修改密码（§4.5）。
+- 评估规则与费率在 Android 端**只读**：通过 `GET /api/eval/state` 返回的 `settings` 做结束时间推算和费用计算（§8），不提供编辑入口。
+- Excel 导出在 Web 端纯前端生成，没有对应接口，Android 端不需要实现。
+- 管理员账号也可以登录 Android 端，按普通用户的功能使用即可，不显示任何管理入口。
+- Android 端仍会**看到** Web 端导入的数据，包括未排期（`start == ""`）的项目和导入时 `detail` 为空的差旅记录，界面需要能正常展示这些数据。
+- 管理员在 Web 端禁用账号或重置密码后，该账号在 Android 端的请求会返回 `401`，按 §1.4 处理即可。
+
 ### 1.1 认证与会话机制（Cookie）
 服务端采用基于服务端 SQLite 会话表的 `HttpOnly` Cookie 认证，不使用 Bearer Token：
 - 登录成功后，响应头通过 `Set-Cookie` 下发 `workcal_sid=<token>; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000; Secure`。
+  - `Secure` 仅在 HTTPS 请求下携带（服务端 `COOKIE_SECURE=auto` 默认行为）；本地 HTTP 联调时 Cookie 不含 `Secure`。
 - 会话默认有效期 **30 天**，距上次活跃超过 **6 小时** 后任意认证请求会自动滑动续期（响应头可能再次下发 `Set-Cookie`）。
 - **Android 建议**：在 `OkHttpClient` 中配置持久化 `CookieJar`（将 Cookie 持久化到 `DataStore` / `EncryptedSharedPreferences`），不要依赖内存 Cookie，避免杀进程后掉登录。
 
@@ -51,7 +78,7 @@ val okHttpClient = OkHttpClient.Builder()
 | `200` / `201` | — | 成功 / 创建成功 |
 | `400` | — | 参数校验失败或业务规则拦截（直接 Toast 展示 `error`） |
 | `401` | `UNAUTHORIZED` | 未登录、Cookie 过期或账号被管理员禁用/改密下线 → 清空本地态并跳转登录页 |
-| `403` | `CSRF_REJECTED` / `FORBIDDEN` | 缺少 `X-Requested-With: WorkCal` 头，或普通用户访问管理员接口 / 账号已禁用 |
+| `403` | `CSRF_REJECTED` / `FORBIDDEN` | 缺少 `X-Requested-With: WorkCal` 头（`CSRF_REJECTED`）；登录接口对已禁用账号返回 `403`（无 `code`），应提示「账号已被禁用」。`FORBIDDEN` 只出现在管理员接口，Android 端不接入这些接口，正常不会遇到。已登录账号被禁用后，其他接口返回的是 `401` |
 | `404` | — | 资源不存在或不属于当前登录用户 |
 | `409` | — | 资源冲突（如新建账号用户名已存在） |
 | `413` | — | 请求 JSON 超过 5MB 上限 |
@@ -118,8 +145,13 @@ val okHttpClient = OkHttpClient.Builder()
 }
 ```
 - `endDate`: 单日日程为空字符串 `""`；跨天日程为结束日期 `YYYY-MM-DD`（闭区间，含当天）。
-- `source`: `"manual"`（普通手工日程）| `"eval"`（由评估项目双向联动生成）| `"ledger"`（历史旧台账导入）。
-- `evalProjectId`: 非空时表示该日程与评估项目一对一绑定。
+- `source`: `"manual"`（普通手工日程）| `"eval"`（与评估项目绑定）| `"ledger"`（旧版台账导入、且类别不是「外出评估」的历史日程）。
+- `evalProjectId`: 非空时表示该日程与评估项目一对一绑定；为空字符串表示普通日程。
+- `ledgerKey` / `ledgerMeta`: **仅当 `source` 为 `"ledger"` 或 `"eval"` 时返回**，普通日程的响应中不含这两个字段，Android 数据模型需声明为可空。
+  - 在评估项目页新建的日程 `ledgerKey` 为 `""`；由旧台账迁移而来的日程保留原 `ledgerKey`。
+  - 即使 `source` 为 `"ledger"`，`ledgerMeta` 也可能缺失（库中无元数据时直接省略该字段）；旧台账日程的 `ledgerMeta` 不含 `status` / `settle`。
+
+> **旧台账自动迁移**：服务端启动时、日程备份恢复后、旧版台账导入后，会把类别为 `cat-assessment` 且未绑定项目的旧台账日程自动转换为评估项目并绑定（`source` 随之变为 `"eval"`）。等级 / 角色 / 阶段无法识别时使用默认值（`二级` / `组员` / `预评估`），并在项目 `note` 末尾追加「（由旧版台账日程自动迁移，请核对：…）」。项目状态按日期推断（已结束 → `已完成`，进行中 → `进行中`，未开始 → `待开始`），结算状态统一为 `未结`。
 
 ### 2.4 EvalProject（评估项目记录）
 ```json
@@ -145,7 +177,8 @@ val okHttpClient = OkHttpClient.Builder()
 - `stage`: `"预评估"` | `"正式评估"`
 - `status`: `"待开始"` | `"进行中"` | `"已提交"` | `"已完成"`
 - `settle`: `"未结"` | `"已结"`
-- `feeManual`: `Double?`，`null` 表示按规则自动计费；非 `null` 表示人工改写费用（保留两位小数，不随费率表变化）。
+- `feeManual`: `Double?`，`null` 表示按规则自动计费；非 `null` 表示人工改写费用（保留两位小数，不随费率表变化）。传入负数或非数字时服务端静默按 `null` 处理，不报错。
+- `start` 可为空字符串 `""`（未排期项目，仅能通过导入、备份恢复或 `allowUnscheduled` 产生），此时不生成工作日程。
 
 ### 2.5 EvalTravel（项目差旅记录）
 ```json
@@ -169,6 +202,7 @@ val okHttpClient = OkHttpClient.Builder()
 ```
 **枚举全集**：
 - `cat`: `"打车"` | `"高铁"` | `"飞机"` | `"自驾"` | `"住宿"` | `"餐饮"` | `"自定义"`（选 `"自定义"` 时 `catCustom` 必填）
+  - 传入不在列表中的非空值时，服务端会自动改为 `"自定义"`，并把原值（截断至 40 字）写入 `catCustom`；传空则默认为 `"打车"`。
 - `reimb`: `"未报"` | `"已报"` | `"已结"`
 
 ### 2.6 EvalSettings（基础规则设置）
@@ -303,11 +337,14 @@ val okHttpClient = OkHttpClient.Builder()
 
 ### 5.5 编辑普通日程
 - **PATCH** `/api/events/:id`
-- **注意**：
-  - 若目标日程 `evalProjectId` 非空（评估项目关联日程），客户端应打开评估项目编辑页并调用 `PATCH /api/eval/projects/:evalProjectId`。
-  - 直接通过本接口尝试修改关联日程的 `categoryId` 会返回 `400 评估项目关联日程不可更改类别`。
 - **请求体**：同新建（仅传需修改的字段）
 - **响应 `200`**：`{ "event": CalendarEvent }`
+- **评估项目关联日程（`evalProjectId` 非空）**：
+  - 客户端应优先打开评估项目编辑页，并调用 `PATCH /api/eval/projects/:evalProjectId`。若本地找不到该项目，先重新拉取 `GET /api/eval/state` 再判断。
+  - 本接口对关联日程**只允许修改 `startDate` / `endDate`**，服务端会把新日期回写到评估项目（单日日程的 `endDate` 为空时，项目 `end` 按 `startDate` 处理），再重新生成日程的标题与备注。响应额外带 `"evalProjectUpdated": true`，客户端应随后刷新评估数据。
+  - 修改 `categoryId` → `400 评估项目关联日程不可更改类别`。
+  - 修改 `title`、`notes` 或把 `allDay` 改为 `false` → `400 评估项目关联日程的标题、备注与时段请在评估项目中修改`。
+  - 若关联的项目已不存在（历史脏数据），按普通日程处理。
 
 ### 5.6 删除单条日程（支持联动双删）
 - **DELETE** `/api/events/:id`
@@ -318,13 +355,23 @@ val okHttpClient = OkHttpClient.Builder()
   ```
 
 ### 5.7 清空普通日程
-- **DELETE** `/api/events`
+- **DELETE** `/api/events`（**仅 Web 端**，Android 端不接入，见 §1.0）
 - **说明**：仅清空非评估关联的普通日程（`eval_project_id == ''`），自动跳过评估项目联动日程以保护台账。
 - **响应 `200`**：`{ "ok": true, "deleted": 12, "skippedEvalCount": 5 }`
 
 ### 5.8 加载示例日程 / 备份恢复
-- **POST** `/api/events/sample`：请求体 `{ "year": 2026, "month": 11 }` → 响应 `200 { "count": 6, "state": CalendarState }`
-- **POST** `/api/backup/restore`：请求体 `{ "mode": "replace" | "merge", "categories": [...], "events": [...] }` → 响应 `200 { "categories": 4, "events": 10, "state": CalendarState }`（`replace` 模式会保留受保护类别与评估项目关联日程）
+- **POST** `/api/events/sample`（**仅 Web 端**，Android 端不接入，见 §1.0）：请求体 `{ "year": 2026, "month": 11 }` → 响应 `200 { "count": 6, "state": CalendarState }`
+- **POST** `/api/backup/restore`（**仅 Web 端**，Android 端不接入，见 §1.0）：
+  - 请求体：`{ "mode": "replace" | "merge", "categories": [...], "events": [...] }`（`mode` 缺省为 `replace`；类别上限 200，日程上限 10000）
+  - 响应 `200`：`{ "categories": 4, "events": 10, "skippedEvalEvents": 2, "state": CalendarState }`
+  - `replace` 模式：清空当前类别与普通日程后导入；评估项目关联日程保留不动，受保护类别 `cat-assessment` 恢复后自动补齐。
+  - 备份中带 `evalProjectId` 的日程**一律跳过**（计入 `skippedEvalEvents`），因为它们由评估数据生成；评估数据请通过 `POST /api/eval/backup/restore` 恢复。
+  - 备份中类别为 `cat-assessment` 的旧台账日程，恢复后会自动迁移为评估项目（见 §2.3）。
+
+### 5.9 旧版台账导入（已废弃）
+- **POST** `/api/events/import-ledger`
+- **说明**：旧版 Web 端「导入台账」使用的接口，仍可调用，仅为兼容保留。**Android 端不接入**（见 §1.0）；Web 端已改用 `POST /api/eval/projects/import`。
+  - 导入后，类别为 `cat-assessment` 的条目会立即迁移为评估项目；按 `ledgerKey` 匹配到已迁移的日程时，只把日期回写到对应项目。
 
 ---
 
@@ -337,6 +384,7 @@ val okHttpClient = OkHttpClient.Builder()
 - **GET** `/api/eval/state?today=2026-11-24`
 - **Query 参数**：`today`（可选，`YYYY-MM-DD`，建议传设备本地当天日期，缺省按服务端东八区日期）。
 - **自动规则**：拉取时自动把当前用户所有 `status == "待开始"` 且 `start <= today` 的项目单向推进为 `"进行中"` 并同步关联日程。
+  - 该推进**不仅在本接口触发**：所有在响应中返回 `evalState` 的写接口都会按请求里的 `today` 再执行一次。建议 Android 端对所有 `/api/eval/*` 请求都传 `today`（Query 或 JSON 体均可），否则按服务端东八区日期计算。
 - **响应 `200`**：
   ```json
   {
@@ -382,7 +430,12 @@ val okHttpClient = OkHttpClient.Builder()
 ### 6.3 编辑评估项目 / 合并态整组改状态
 - **PATCH** `/api/eval/projects/:id`
 - **用法 A — 常规字段更新**：传任意要修改的字段（如 `name`、`level`、`role`、`stage`、`start`、`end`、`status`、`settle`、`note`、`feeManual`、`today`）。
-  - 若 `start` 变更或清空：自动更新或移除对应的工作日程。
+  - `start` 变更：自动更新对应的工作日程。
+  - **清空 `start`（改为未排期）必须同时传 `"allowUnscheduled": true`**，否则返回 `400 开始时间不能为空`。清空后服务端会删除对应的工作日程：
+    ```json
+    { "start": "", "end": "", "allowUnscheduled": true, "today": "2026-11-24" }
+    ```
+  - 对本来就未排期的项目，只要不传 `start`，即可修改其他字段（如行内改状态）。
 - **用法 B — 合并态项目整体改状态**：
   ```json
   { "status": "已完成", "syncGroupStatus": true, "today": "2026-11-24" }
@@ -411,14 +464,15 @@ val okHttpClient = OkHttpClient.Builder()
 - **响应 `200`**：`{ "ok": true, "evalState", "calendarState" }`
 
 ### 6.6 批量导入评估项目 / 载入示例项目
-- **POST** `/api/eval/projects/import`
+- **POST** `/api/eval/projects/import`（**仅 Web 端**，Android 端不接入，见 §1.0）
   - 请求体：`{ "mode": "append" | "replace", "items": [ /* EvalProject 输入数组，允许 start 为空(未排期) */ ], "today": "2026-11-24" }`
   - 去重规则（`append` 模式）：按 `name + stage + start` 签名去重。单次上限 3000 条。
   - 响应 `200`：`{ "imported": 5, "skippedDup": 1, "mode": "append", "evalState", "calendarState" }`
-- **POST** `/api/eval/projects/sample`
+- **POST** `/api/eval/projects/sample`（**仅 Web 端**，Android 端不接入，见 §1.0）
   - 请求体：`{ "today": "2026-11-24" }`
   - 写入 7 条演示记录（含 2 个双阶段项目）并自动同步日程。
-  - 响应 `200`：`{ "count": 7, "evalState", "calendarState" }`
+  - **不去重**：每次调用都会再追加 7 条。
+  - 响应 `200`：`{ "count": 7, "evalState", "calendarState" }`；示例数据校验失败时返回 `400`。
 
 ### 6.7 项目差旅 CRUD 与批量操作
 | 方法 | 路径 | 请求体 | 响应 | 备注 |
@@ -427,21 +481,22 @@ val okHttpClient = OkHttpClient.Builder()
 | `PATCH` | `/api/eval/travels/:id` | 任意待更新字段（行内改报销状态仅传 `{ "reimb": "已报" }`） | `200 { "travel", "evalState" }` | — |
 | `POST` | `/api/eval/travels/batch` | `{ "ids": ["t-1", "t-2"], "reimb": "已结" }` | `200 { "updatedCount", "evalState" }` | — |
 | `DELETE` | `/api/eval/travels/:id` | — | `200 { "ok": true, "evalState" }` | — |
-| `POST` | `/api/eval/travels/import` | `{ "mode": "append" \| "replace", "items": [...] }` | `200 { "imported", "skippedDup", "mode", "evalState" }` | 按 6 字段签名去重，上限 5000 笔，导入允许 `detail` 为空 |
+| `POST` | `/api/eval/travels/import` | `{ "mode": "append" \| "replace", "items": [...] }` | `200 { "imported", "skippedDup", "mode", "evalState" }` | **仅 Web 端**（Excel 导入），Android 端不接入；按 6 字段签名去重，上限 5000 笔，导入允许 `detail` 为空 |
 
 ### 6.8 基础数据设置、偏好、JSON 备份恢复与清空
 | 方法 | 路径 | 请求体 | 响应 | 说明 |
 | :--- | :--- | :--- | :--- | :--- |
-| `PUT` | `/api/eval/settings` | `{ "daysRules": {...}, "feeRates": {...} }` | `200 { "settings", "evalState" }` | 保存天数规则与费率表 |
-| `POST` | `/api/eval/settings/reset` | `{}` | `200 { "settings", "evalState" }` | 恢复默认规则与费率 |
+| `PUT` | `/api/eval/settings` | `{ "daysRules": {...}, "feeRates": {...} }` | `200 { "settings", "evalState" }` | **仅 Web 端**；保存天数规则与费率表 |
+| `POST` | `/api/eval/settings/reset` | `{}` | `200 { "settings", "evalState" }` | **仅 Web 端**；恢复默认规则与费率 |
 | `PUT` | `/api/eval/preferences` | `{ "mergeNames": true }` | `200 { "mergeNames": true }` | 保存「合并同名项目」开关 |
-| `POST` | `/api/eval/backup/restore` | `{ "projects": [...], "travels": [...], "settings": {...}, "mergeNames"?: true, "today"?: "..." }` | `200 { "projects", "travels", "evalState", "calendarState" }` | 覆盖恢复评估数据并重同步评估日程（不影响其他类别日程） |
-| `DELETE` | `/api/eval/all?today=...` | — | `200 { "ok": true, "evalState", "calendarState" }` | 清空全部项目与差旅、重置默认设置并移除评估关联日程 |
+| `POST` | `/api/eval/backup/restore` | `{ "projects": [...], "travels": [...], "settings": {...}, "mergeNames"?: true, "today"?: "..." }` | `200 { "projects", "travels", "evalState", "calendarState" }` | **仅 Web 端**；覆盖恢复评估数据并重同步评估日程（不影响其他类别日程） |
+| `DELETE` | `/api/eval/all?today=...` | — | `200 { "ok": true, "evalState", "calendarState" }` | **仅 Web 端**；清空全部项目与差旅、重置默认设置并移除评估关联日程 |
 
 ---
 
-## 7. 管理员后台 (`/api/admin`)
+## 7. 管理员后台 (`/api/admin`)（仅 Web 端，Android 端不接入）
 
+> **Android 端不实现本节任何接口**，这里只作为 Web 端参考保留。
 > 以下接口要求当前用户 `role == "admin"`，否则返回 `403 FORBIDDEN`。
 
 | 方法 | 路径 | 请求体 / 参数 | 响应 | 说明 |
@@ -473,7 +528,7 @@ val okHttpClient = OkHttpClient.Builder()
    - 否则：`fee = round2(days * rate)`（`days == 0` 时为 `0.00`）。
 4. **工作日程 ↔ 评估项目客户端路由**：
    - 日程页「新建日程」选类别为 `cat-assessment`（外出评估）→ 切换为评估项目表单，保存调用 `POST /api/eval/projects`。
-   - 日程页点击已有日程编辑：若 `event.evalProjectId` 非空 → 直接打开评估项目编辑表单，保存调用 `PATCH /api/eval/projects/:evalProjectId`（锁定类别不可切换）。
+   - 日程页点击已有日程编辑：若 `event.evalProjectId` 非空 → 直接打开评估项目编辑表单，保存调用 `PATCH /api/eval/projects/:evalProjectId`（锁定类别不可切换）。本地评估数据里找不到该项目时，先刷新 `GET /api/eval/state` 再打开；日历上直接改日期可走 `PATCH /api/events/:id`（见 §5.5）。
    - 日程页删除已有日程：若 `event.evalProjectId` 非空 → 二次确认提示“将同步删除评估项目列表中的对应记录（历史差旅保留）”，确认后调用 `DELETE /api/events/:id` 并从本地移除 `deletedEvalProjectId`。
 5. **时间统计三口径（不可混用）**：
    - **项目列表时间筛选 / 近期评估窗口**：区间交集（与所选区间有任意一天重叠即命中；未排期不命中）。
